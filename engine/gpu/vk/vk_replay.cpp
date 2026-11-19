@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <dlfcn.h>   // (jt_mark: hos_jt_mark_ext, looked up in the exe)
+#include <sched.h>   // (better-aa: the renderer's chain on the P-cores, pcore_set)
 #endif
 #include <atomic>
 #include <chrono>
@@ -2622,10 +2623,12 @@ void par_worker_ideal(int index) {
     logf("vk: parallel replay worker %d: ideal processor %d (was %d; %d cores) (RX_VK_PARALLEL_IDEAL)", index, cpu, (int)prev,
          (int)firsts.size());
 }
+void pcore_pin_thread();   // (better-aa: below, by replay_pin_mask)
 void par_worker_main(int index) {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk replay worker");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     par_worker_ideal(index);
+    pcore_pin_thread();   // (better-aa)
     std::deque<std::function<void()>>& own = par_pool.own[index & 7];
     for (;;) {
         std::function<void()> fn;
@@ -4023,6 +4026,44 @@ bool async_on();
 // (Windows only: on Linux a thread inherits the affinity of the one that makes it, and the back end's threads made on
 // first use inside a replay (the capture's copy helpers, the shader workers, the pool imports...) would all have stayed on
 // the reserved core. Windows gives a new thread the process's)
+#if !defined(_WIN32)
+/// (better-aa) A hybrid Intel CPU's P-cores (/sys/devices/cpu_core/cpus, the kernel's list), or null: not hybrid, or
+/// RX_VK_PCORE_PIN=0. The frame's critical path is the renderer's chain: the Presentation Thread's replays and present,
+/// the replay workers, the order thread (HOS_JOBTRACE + tools/bench/critpath.py: 17.6 of a 20.4 ms frame on the
+/// Presentation Thread, waiting for the replay). Left to the scheduler they ran 10-16% of their time on the E-cores (perf,
+/// i5-12600KF). Kept on the P-cores alone (the game's own threads left anywhere: those on the P-cores too was 1.5 fps
+/// worse), Kokiri at 1440p: 51.0 -> 53.7 fps, alternated live twice
+const cpu_set_t* pcore_set() {
+    static const cpu_set_t* const set = []() -> const cpu_set_t* {
+        const char* e = getenv("RX_VK_PCORE_PIN");
+        if (e && atoi(e) == 0) return nullptr;
+        FILE* f = fopen("/sys/devices/cpu_core/cpus", "r");
+        if (!f) return nullptr;
+        char line[256] = {};
+        const bool got = fgets(line, sizeof line, f) != nullptr;
+        fclose(f);
+        if (!got) return nullptr;
+        static cpu_set_t s;
+        CPU_ZERO(&s);
+        for (char* t = strtok(line, ",\n"); t; t = strtok(nullptr, ",\n")) {
+            int a = 0, b = 0;
+            const int n = sscanf(t, "%d-%d", &a, &b);
+            for (int c = a; n >= 1 && c <= (n == 2 ? b : a) && c < CPU_SETSIZE; c++) CPU_SET(c, &s);
+        }
+        if (!CPU_COUNT(&s)) return nullptr;
+        logf("vk: the renderer's replays, workers and present on the P-cores (%d of them, /sys/devices/cpu_core/cpus; "
+             "RX_VK_PCORE_PIN=0: off)", CPU_COUNT(&s));
+        return &s;
+    }();
+    return set;
+}
+/// (better-aa) The calling thread on the P-cores for good (the replay workers, the order thread)
+void pcore_pin_thread() {
+    if (const cpu_set_t* pc = pcore_set()) sched_setaffinity(0, sizeof *pc, pc);
+}
+#else
+void pcore_pin_thread() {}
+#endif
 uint64_t replay_pin_mask() {
 #if defined(_WIN32)
     static const uint64_t m = [] {
@@ -4038,6 +4079,10 @@ uint64_t replay_pin_mask() {
 }
 thread_local int replay_pin_depth = 0;
 thread_local DWORD_PTR replay_pin_prev = 0;
+#if !defined(_WIN32)
+thread_local cpu_set_t pcore_prev;
+thread_local bool pcore_pinned = false;
+#endif
 struct ReplayPin {
     bool counted = false;
     ReplayPin() {
@@ -4045,10 +4090,18 @@ struct ReplayPin {
         counted = true;
         if (replay_pin_depth++) return;   // (the outermost one: a submit's replay inside its capture's)
         if (const uint64_t m = replay_pin_mask()) replay_pin_prev = SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)m);
+#if !defined(_WIN32)
+        // (better-aa: Linux) the replay and the present on the P-cores, the thread's own placement back after (pcore_set)
+        if (const cpu_set_t* pc = pcore_set(); pc && sched_getaffinity(0, sizeof pcore_prev, &pcore_prev) == 0)
+            pcore_pinned = sched_setaffinity(0, sizeof *pc, pc) == 0;
+#endif
     }
     ~ReplayPin() {
         if (!counted || --replay_pin_depth) return;
         if (replay_pin_prev) SetThreadAffinityMask(GetCurrentThread(), replay_pin_prev), replay_pin_prev = 0;
+#if !defined(_WIN32)
+        if (pcore_pinned) sched_setaffinity(0, sizeof pcore_prev, &pcore_prev), pcore_pinned = false;
+#endif
     }
     ReplayPin(const ReplayPin&) = delete;
     ReplayPin& operator=(const ReplayPin&) = delete;
@@ -4303,6 +4356,7 @@ void sync_settle() {
 }
 void sync_watch() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk order");
+    pcore_pin_thread();   // (better-aa)
     for (;;) {
         if (watch_kick_on()) WaitForSingleObject(watch_kick_event(), 1);
         else Sleep(1);
