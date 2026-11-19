@@ -318,6 +318,18 @@ void game_size(float scale, uint32_t& w, uint32_t& h) {
     const int k = twelfths(scale);
     w = (o.w * k + 11) / 12, h = o.h * k / 12;
 }
+/// (better-aa) The Custom render scale row: its share and the 3D's size at the output shown
+const char* tx_res_custom(int v) {
+    static char b[48];
+    const Out o = shown_output();
+    snprintf(b, sizeof b, "%d%% (%ux%u)", v, o.w * v / 100, o.h * v / 100);
+    return b;
+}
+const char* hn_res_custom(int v, int variant) {
+    (void)v;
+    if (variant > 0) return nullptr;
+    return "Applies at once. With frame generation, the game's own frame rate is what counts: aim for a steady 60.";
+}
 const char* tx_resolution(int v) {
     static char b[48];
     const int up = upscaler();
@@ -325,6 +337,11 @@ const char* tx_resolution(int v) {
     if (up == ur::DLAA) return "Native (DLAA)";
     if (up == ur::FSR4_AA) return "Native (FSR 4)";
     if (!ur::percent(v)) return "Auto (dynamic)";
+    if (v == ur::CUSTOM) {   // (better-aa: the share and the size it draws, exactly: not a twelfth)
+        const Out o = shown_output();
+        snprintf(b, sizeof b, "Custom (%d%%, %ux%u)", ur::percent(v), o.w * ur::percent(v) / 100, o.h * ur::percent(v) / 100);
+        return b;
+    }
     if (const char* mode = ur::mode_name(up, v)) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
         return b;
@@ -345,6 +362,8 @@ const char* hn_resolution(int v, int variant) {
         return "FSR 4's native AA draws the 3D at full size: nothing to set here. Choose FSR 4 or the game's own upscaler "
                "to draw it smaller.";
     if (variant < 0) v = ur::snap(up, v);
+    if (v == ur::CUSTOM)   // (better-aa)
+        return "Your own share, set on the Custom render scale row below: for a GPU that cannot hold Native AA or 100%.";
     const int p = ur::percent(v);
     if (up == ur::DLSS) {
         switch (p) {
@@ -673,6 +692,9 @@ Row rows[] = {
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
      "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
+    {TAB_GRAPHICS, "Custom render scale", &opts.res_custom, ur::kCustomLo, ur::kCustomHi, 1, tx_res_custom,
+     "The 3D's share of the output with Render resolution on Custom, in steps of 1%. Lower it until the frame rate holds.",
+     hn_res_custom},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
@@ -979,7 +1001,8 @@ bool row_shown(int i) {
     }
     return (rows[i].cheat < 0 || cheats_on()) &&
            (rows[i].value != &opts.dlss || ur::upscaler_shown(dlss_built() || fsr4_built(), fsr3::supported())) &&
-           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built()));
+           (rows[i].value != &opts.dlss_model || ur::model_shown(dlss_built())) &&
+           (rows[i].value != &opts.res_custom || ur::snap(upscaler(), opts.resolution) == ur::CUSTOM);   // (better-aa)
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -1010,7 +1033,7 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.res_custom || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
 bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
@@ -2040,6 +2063,7 @@ void startup_screen(const StartupView* view) {
 }
 
 void menu_init() {
+    upscaler_rows::custom_share() = &opts.res_custom;   // (better-aa: Render resolution's Custom reads the Custom render scale row)
     static bool done;
     if (done) return;
     done = true;
@@ -2126,6 +2150,14 @@ int window_sharpness() {
 }
 int resolution_scale() {
     const int drawn = upscaler_rows::snap(upscaler(), opts.resolution);
+    if (drawn == upscaler_rows::CUSTOM) {   // (better-aa: the exact share, not a twelfth: the game takes any scale)
+        static int said = -1;
+        if (said != opts.res_custom) {
+            said = opts.res_custom;
+            logf("vk: Render resolution: Custom %d%% with Upscaler %d", upscaler_rows::percent(drawn), upscaler());
+        }
+        return upscaler_rows::percent(drawn) * 100;
+    }
     {   // (said when it changes: the choice kept and what the Upscaler shown draws at, e.g. 58% kept, 50% drawn by the game's own)
         static int said = -1;
         if (said != drawn * 16 + opts.resolution) {

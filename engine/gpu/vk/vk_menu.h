@@ -27,6 +27,7 @@ struct Options {
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer; E, the CNN, under 7 GB of video memory), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
                           // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
+    int res_custom = 85;  // (better-aa) the Custom render scale row: the 3D's share of the output, 50 to 100 (upscaler_rows.h CUSTOM)
     int fps_limit = 0;    // the game's frame rate above 60 (Real time only): 0 60, 1 90, 2 120, 3 144, 4 165, 5 240 (host/nn_vi.c; HOS_FPS_LIMIT)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)

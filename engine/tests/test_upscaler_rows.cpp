@@ -15,8 +15,27 @@ int main() {
     CHECK("saved values keep their shares", ur::percent(0) == 0 && ur::percent(1) == 100 && ur::percent(2) == 75 &&
                                                 ur::percent(3) == 67 && ur::percent(4) == 50);
     CHECK("Balanced and Ultra Performance", ur::percent(5) == 58 && ur::percent(6) == 33);
-    CHECK("a value past the row is Auto", ur::percent(7) == 0 && ur::percent(-1) == 0);
-    for (int v = 1; v < ur::kValues; v++) {
+    CHECK("a value past the row is Auto", ur::percent(ur::kValues) == 0 && ur::percent(-1) == 0);
+    {   // (better-aa) Custom: the Custom render scale row's share, clamped to 50..100, 85 with no row
+        CHECK("Custom without a row", ur::percent(ur::CUSTOM) == ur::kCustomDefault);
+        int row = 91;
+        ur::custom_share() = &row;
+        CHECK("Custom follows its row", ur::percent(ur::CUSTOM) == 91);
+        row = 20;
+        CHECK("Custom clamped low", ur::percent(ur::CUSTOM) == ur::kCustomLo);
+        row = 140;
+        CHECK("Custom clamped high", ur::percent(ur::CUSTOM) == ur::kCustomHi);
+        row = 85;
+        CHECK("Custom's name", !std::strcmp(ur::mode_name(ur::FSR4, ur::CUSTOM), "Custom") &&
+                                   !std::strcmp(ur::mode_name(GAME, ur::CUSTOM), "Custom"));
+        CHECK("FSR: Native AA, Custom, Quality", ur::step(ur::FSR4, 1, 1) == ur::CUSTOM && ur::step(ur::FSR4, ur::CUSTOM, 1) == 3 &&
+                                                   ur::step(ur::FSR3, 3, -1) == ur::CUSTOM);
+        CHECK("DLSS has no Custom: the nearest of its modes", ur::snap(DLSS, ur::CUSTOM) == 3);
+        CHECK("Custom is a step of FSR and the game's own", ur::snap(ur::FSR3, ur::CUSTOM) == ur::CUSTOM &&
+                                                               ur::snap(GAME, ur::CUSTOM) == ur::CUSTOM);
+        ur::custom_share() = nullptr;
+    }
+    for (int v = 1; v < ur::CUSTOM; v++) {
         const int k = (int)(ur::percent(v) * 12 / 100.0 + 0.5);
         CHECK("each share is a twelfth", k * 100 / 12 == ur::percent(v) || (k * 100 + 11) / 12 == ur::percent(v));
     }
@@ -25,9 +44,11 @@ int main() {
                                    !std::strcmp(ur::dlss_mode_name(6), "Ultra Performance"));
     CHECK("no mode name for Auto, 100% or 75%", !ur::dlss_mode_name(0) && !ur::dlss_mode_name(1) && !ur::dlss_mode_name(2));
 
-    // the game's own: Auto, 100, 75, 67, 50, as before
-    CHECK("game: Right", ur::step(GAME, 0, 1) == 1 && ur::step(GAME, 1, 1) == 2 && ur::step(GAME, 3, 1) == 4 && ur::step(GAME, 4, 1) == 0);
-    CHECK("game: Left", ur::step(GAME, 0, -1) == 4 && ur::step(GAME, 1, -1) == 0 && ur::step(GAME, 4, -1) == 3);
+    // the game's own: Auto, 100, Custom (better-aa), 75, 67, 50
+    CHECK("game: Right", ur::step(GAME, 0, 1) == 1 && ur::step(GAME, 1, 1) == ur::CUSTOM && ur::step(GAME, ur::CUSTOM, 1) == 2 &&
+                             ur::step(GAME, 3, 1) == 4 && ur::step(GAME, 4, 1) == 0);
+    CHECK("game: Left", ur::step(GAME, 0, -1) == 4 && ur::step(GAME, 1, -1) == 0 && ur::step(GAME, 2, -1) == ur::CUSTOM &&
+                            ur::step(GAME, 4, -1) == 3);
     // DLSS: Auto, Quality 67, Balanced 58, Performance 50, Ultra Performance 33
     CHECK("dlss: Right", ur::step(DLSS, 0, 1) == 3 && ur::step(DLSS, 3, 1) == 5 && ur::step(DLSS, 5, 1) == 4 &&
                              ur::step(DLSS, 4, 1) == 6 && ur::step(DLSS, 6, 1) == 0);
@@ -75,7 +96,7 @@ int main() {
                                                           ur::upscaler_shown(true, false));
         CHECK("FSR 3.1's modes are DLSS's shares", ur::scales_by_mode(ur::FSR3) && ur::scales_by_mode(DLSS) &&
                                                      !ur::scales_by_mode(DLAA) && !ur::scales_by_mode(GAME));
-        CHECK("FSR 3.1 steps through Native AA, then DLSS's modes", ur::step(ur::FSR3, 0, 1) == 1 && ur::step(ur::FSR3, 1, 1) == 3 &&
+        CHECK("FSR 3.1 steps through Native AA, then DLSS's modes", ur::step(ur::FSR3, 0, 1) == 1 && ur::step(ur::FSR3, ur::CUSTOM, 1) == 3 &&
                                               ur::step(ur::FSR3, 3, 1) == 5 && ur::step(ur::FSR3, 6, 1) == 0 &&
                                               ur::step(ur::FSR3, 0, -1) == 6 && ur::snap(ur::FSR3, 2) == 3 && ur::snap(ur::FSR3, 1) == 1);
         CHECK("FSR's 100% is Native AA, DLSS has none", !strcmp(ur::mode_name(ur::FSR3, 1), "Native AA") &&

@@ -30,18 +30,33 @@ inline bool scales_by_mode(int upscaler) { return upscaler == DLSS || upscaler =
 /// before (100, 75, 67, 50: saved options keep their meaning); 5 and 6 came with DLSS's Balanced and Ultra Performance. Each
 /// is a twelfth of the output (vk_menu.cpp twelfths): 8/12, 7/12, 6/12 and 4/12 are DLSS's own ratios
 constexpr int kPercent[] = {0, 100, 75, 67, 50, 58, 33};
-constexpr int kValues = sizeof kPercent / sizeof kPercent[0];
-inline int percent(int v) { return v > 0 && v < kValues ? kPercent[v] : 0; }
+/// (better-aa) 7: Custom, the share the Custom render scale row sets (opts.res_custom, 50 to 100 in 1% steps): between
+/// Native AA and Quality for a GPU that holds neither, or anywhere else. The menu points custom_share at that row's value
+constexpr int CUSTOM = 7;
+constexpr int kValues = CUSTOM + 1;
+constexpr int kCustomLo = 50, kCustomHi = 100, kCustomDefault = 85;
+inline const int*& custom_share() {
+    static const int* p = nullptr;
+    return p;
+}
+inline int custom_percent() {
+    const int v = custom_share() ? *custom_share() : kCustomDefault;
+    return v < kCustomLo ? kCustomLo : v > kCustomHi ? kCustomHi : v;
+}
+inline int percent(int v) {
+    if (v == CUSTOM) return custom_percent();
+    return v > 0 && v < CUSTOM ? kPercent[v] : 0;
+}
 
 /// The steps the Render resolution row takes, best first after Auto. DLSS: its Quality, Balanced, Performance and Ultra
 /// Performance; Auto too, since DLSS follows the game's dynamic size (vk_dlss.cpp makes its feature again when the size
 /// leaves the mode's range; FSR 4's context takes any size up to the output). DLAA, FSR 4's native AA: none (the 3D is drawn at
 /// full size)
-constexpr int kGameSteps[] = {0, 1, 2, 3, 4};
+constexpr int kGameSteps[] = {0, 1, CUSTOM, 2, 3, 4};   // (better-aa: Custom after 100%)
 constexpr int kDlssSteps[] = {0, 3, 5, 4, 6};
 /// (better-aa) FSR 3.1 and FSR 4: DLSS's modes with Native AA (100%, the 3D at the output's full size, the upscaler
 /// anti-aliasing alone) before Quality. DLSS keeps DLAA as an Upscaler of its own
-constexpr int kFsrSteps[] = {0, 1, 3, 5, 4, 6};
+constexpr int kFsrSteps[] = {0, 1, CUSTOM, 3, 5, 4, 6};   // (and Custom after Native AA)
 inline bool is_fsr(int upscaler) { return upscaler == FSR3 || upscaler == FSR4; }
 inline const int* steps(int upscaler, int& n) {
     if (is_fsr(upscaler)) return n = sizeof kFsrSteps / sizeof kFsrSteps[0], kFsrSteps;
@@ -61,6 +76,7 @@ inline const char* dlss_mode_name(int v) {
 }
 /// (better-aa) The mode's name for the upscaler: DLSS's, and for FSR 3.1 and FSR 4 their Native AA at 100% too
 inline const char* mode_name(int upscaler, int v) {
+    if (v == CUSTOM) return "Custom";
     if (is_fsr(upscaler) && percent(v) == 100) return "Native AA";
     return scales_by_mode(upscaler) ? dlss_mode_name(v) : nullptr;
 }
