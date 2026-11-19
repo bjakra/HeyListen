@@ -39,6 +39,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -57,9 +58,13 @@
 #include "vk_fsr3_inputs.h"   // (better-aa: take_motion, this chain's motion for FSR 3.1's frame interpolation)
 #include "vk_fsr3fi.h"        // (frames_wanted)
 #include "hidden_mesh.h"   // (better-aa: kHiddenAfter, for the log)
+#include "scene_pass.h"   // (better-aa: the frame's scene passes, the one used picked at the upscale)
 #include "vk_fsr4.h"
 #include "vk_menu.h"
 #include "vk_texture.h"
+#include "vk_tune.h"   // (better-aa: live switches: mv_dump, debug_motion, fg_chain_motion)
+
+#include <direct.h>   // (_mkdir: mv_dump)
 
 #include "shaders/dlss_actor_frag_spv.h"
 #include "shaders/dlss_actor_vert_spv.h"
@@ -119,6 +124,7 @@ struct Image {
 
 struct Camera {
     float current[16]{};      // (its view-projection)
+    float projection[16]{};   // (better-aa: its projection alone, at 0x70: mv_dump's)
     float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
     float near_z = 0, far_z = 0, fov_y = 0;   // (its projection's, 0 when it is not a plain perspective one)
     uint32_t width = 0, height = 0;
@@ -149,7 +155,10 @@ struct State {
     VkPipelineLayout prep_hdr_layout = VK_NULL_HANDLE, out_hdr_layout = VK_NULL_HANDLE;
     VkPipeline prep_hdr = VK_NULL_HANDLE, out_hdr = VK_NULL_HANDLE;
     VkSampler point = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
-    Camera cam;               // (this frame's, since the last upscale)
+    Camera cam;               // (this frame's, since the last upscale: its pass's, pick_pass)
+    scene_pass::Passes passes;                  // (better-aa: this frame's scene passes, and each one's camera)
+    Camera pass_cam[scene_pass::kMax];
+    uint64_t cam_used = 0;                      // (the frame whose camera an upscale took: no other pick that frame)
     // (the gameplay upscale's output, as last seen: the scene sizes the upscaler can take follow from it,
     // temporal_scene_size. Read on the game's draws without the lock)
     std::atomic<uint32_t> out_w{0}, out_h{0};
@@ -662,16 +671,69 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
-    if (s.cam.valid && s.cam.frame == now && (uint64_t)width * height <= (uint64_t)s.cam.width * s.cam.height)
-        return;   // (the largest one of the frame wins)
+    // (better-aa: RX_VK_TUNE's cam_log=<n>: the next n frames' cameras of scene draws, each distinct one once a frame with its
+    // draws' count, and which the chain took: whether one frame's scene has more than one camera)
+    struct Seen {
+        uint64_t addr;
+        float vp[16], n, f;
+        const Texture* depth;
+        uint32_t w, h, draws;
+    };
+    static std::vector<Seen> seen;
+    static uint64_t seen_frame = 0;
+    static int log_asked = 0, log_left = 0;
+    if (const int n = tune_int("cam_log", 0); n != log_asked) log_asked = n, log_left = n > 0 ? n : 0;
+    if (seen_frame != now) {
+        if (!seen.empty()) {
+            std::string line;
+            for (const Seen& e : seen) {
+                char b[400];
+                snprintf(b, sizeof b, " | cam %#llx %ux%u depth #%u (format %d, %ux%u) draws %u near %.5f far %.1f vp row0 %.4f %.4f %.4f %.4f row3 %.4f %.4f %.4f %.4f",
+                         (unsigned long long)e.addr, e.w, e.h, e.depth ? e.depth->id : 0u, e.depth ? (int)e.depth->format : 0,
+                         e.depth ? e.depth->width : 0u, e.depth ? e.depth->height : 0u, e.draws, e.n, e.f, e.vp[0], e.vp[1],
+                         e.vp[2], e.vp[3], e.vp[12], e.vp[13], e.vp[14], e.vp[15]);
+                line += b;
+            }
+            const bool took = s.cam.valid && s.cam.frame == seen_frame;
+            logf("vk: cam log frame %llu: %zu cameras%s; taken: %s depth #%u near %.5f", (unsigned long long)seen_frame,
+                 seen.size(), line.c_str(), took ? "yes" : "no", took && s.cam.depth ? s.cam.depth->id : 0u, s.cam.near_z);
+            seen.clear();
+            if (log_left > 0) log_left--;
+        }
+        seen_frame = now;
+    }
+    if (log_left > 0) {
+        float c[0x230 / 4];
+        if (memory_read_as_submitted(camera, c, sizeof c)) {
+            const float p22 = c[0x98 / 4], p23 = c[0x9c / 4];
+            bool found = false;
+            for (Seen& e : seen)
+                if (e.addr == camera && !std::memcmp(e.vp, c + 0x30 / 4, sizeof e.vp) && e.depth == depth) e.draws++, found = true;
+            if (!found && seen.size() < 8) {
+                Seen e{camera, {}, p23 / (p22 - 1.0f), p23 / (p22 + 1.0f), depth, width, height, 1};
+                std::memcpy(e.vp, c + 0x30 / 4, sizeof e.vp);
+                seen.push_back(e);
+            }
+        }
+    }
+    // (better-aa: RX_VK_TUNE's cam_depth_id=<texture id>: only draws with that depth, for an A/B of the scene's depths)
+    if (const int want = tune_int("cam_depth_id", 0); want > 0 && (!depth || (int)depth->id != want)) return;
+    // (better-aa: each pass of the frame keeps the camera of its first draw that has one; pick_pass chooses among them at the
+    // upscale: scene_pass.h)
+    bool fresh = false;
+    const int pi = s.passes.note(now, color0, depth, width, height, &fresh);
+    if (pi < 0) return;
+    if (fresh) s.pass_cam[pi].valid = false;
+    if (s.pass_cam[pi].valid) return;
     float c[0x230 / 4];
     if (!memory_read_as_submitted(camera, c, sizeof c)) return;
     // (the target's size at 0x120; the projection at 0x70, its w row (0, 0, -1, 0) at 0xa0)
     if (c[0x120 / 4] != (float)width || c[0x124 / 4] != (float)height || c[0xa0 / 4] != 0.0f || c[0xa4 / 4] != 0.0f ||
         c[0xa8 / 4] != -1.0f || c[0xac / 4] != 0.0f)
         return;
-    Camera& k = s.cam;
+    Camera& k = s.pass_cam[pi];
     std::memcpy(k.current, c + 0x30 / 4, sizeof k.current);
+    std::memcpy(k.projection, c + 0x70 / 4, sizeof k.projection);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
     k.jitter[0] = -c[0x78 / 4], k.jitter[1] = -c[0x88 / 4];
     // (its planes and field of view, for an engine that wants them (FSR's depth heuristics): an OpenGL-style projection, depth
@@ -706,11 +768,130 @@ int temporal_hidden_mesh_mode() {
     return mode;
 }
 
+// (better-aa) RX_VK_TUNE's mv_dump=<n> (vk_tune.h): the chain's colour, depth and motion of the next n frames read back as
+// the engine was given them, one file a frame in RX_VK_MV_DUMP_DIR/run<k>/ (tools/mv_check.py measures the motion against
+// the colour: where a pixel's motion does not take it to the same colour in the frame before, the motion is wrong there).
+// A new run each time the value changes. File: "MVD1", width, height (u32), jitter x, y (f32, render pixels), reset (u32),
+// frame (u64), this frame's view-projection, the frame before's (its jitter off: the reprojection's), this frame's projection
+// (16 f32 each, row major as the game has them); then the colour (RGBA16F), the depth (R32F), the motion (RG16F), each
+// width x height. ("MVD2": with the matrices)
+namespace mv_dump {
+struct Pending {
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    void* map = nullptr;
+    uint64_t value = 0, frame = 0;
+    uint32_t w = 0, h = 0, reset = 0;
+    float jitter[2]{};
+    float mats[48]{};
+    std::string path;
+};
+std::mutex mu;
+std::vector<Pending> pending;
+int asked = 0, left = 0, run = 0, index = 0;
+
+/// Pending files whose frame the GPU is done with, written (every frame, cheap when there are none)
+void write_done() {
+    const uint64_t done = vk_timeline_completed();
+    for (size_t i = 0; i < pending.size();) {
+        Pending& p = pending[i];
+        if (!p.value || done < p.value || texture_frame_no() - p.frame < 4) {
+            i++;
+            continue;
+        }
+        const size_t px = (size_t)p.w * p.h;
+        invalidate_mapped(p.alloc, px * 16);
+        if (FILE* f = fopen(p.path.c_str(), "wb")) {
+            fwrite("MVD2", 4, 1, f), fwrite(&p.w, 4, 1, f), fwrite(&p.h, 4, 1, f), fwrite(p.jitter, 4, 2, f);
+            fwrite(&p.reset, 4, 1, f), fwrite(&p.frame, 8, 1, f), fwrite(p.mats, 4, 48, f);
+            fwrite(p.map, 1, px * 16, f);
+            fclose(f);
+            logf("vk: mv dump: %s (frame %llu, %ux%u)", p.path.c_str(), (unsigned long long)p.frame, p.w, p.h);
+        }
+        destroy_buffer(p.buf, p.alloc);
+        pending[i] = std::move(pending.back());
+        pending.pop_back();
+    }
+}
+
+/// This frame's colour, depth and motion read back, while a run asks for it
+void take(VkCommandBuffer cmd, const TemporalFrame& f, uint64_t frame, const float* current, const float* previous,
+          const float* projection) {
+    std::lock_guard lk(mu);
+    write_done();
+    if (const int n = tune_int("mv_dump", 0); n != asked) {
+        asked = n;
+        if (n > 0) left = n, run++, index = 0;
+    }
+    if (left <= 0) return;
+    left--;
+    const char* base = getenv("RX_VK_MV_DUMP_DIR");
+    const std::string dir = std::string(base && *base ? base : "mvdump") + "/run" + std::to_string(run);
+    if (index == 0) _mkdir(base && *base ? base : "mvdump"), _mkdir(dir.c_str());
+    Pending p;
+    p.w = f.render_w, p.h = f.render_h, p.frame = frame, p.reset = f.reset ? 1 : 0;
+    p.jitter[0] = f.jitter[0], p.jitter[1] = f.jitter[1];
+    std::memcpy(p.mats, current, 64), std::memcpy(p.mats + 16, previous, 64), std::memcpy(p.mats + 32, projection, 64);
+    char name[32];
+    snprintf(name, sizeof name, "/f%03d.mvd", index++);
+    p.path = dir + name;
+    const size_t px = (size_t)p.w * p.h;
+    if (!create_buffer(px * 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, p.buf, p.alloc, &p.map) || !p.map) return;
+    full_barrier(cmd);
+    const TemporalImage* im[3] = {&f.color, &f.depth, &f.motion};
+    const VkDeviceSize off[3] = {0, px * 8, px * 12};
+    for (int i = 0; i < 3; i++) {
+        const VkBufferImageCopy c{off[i], 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {p.w, p.h, 1}};
+        vkCmdCopyImageToBuffer(cmd, im[i]->image, VK_IMAGE_LAYOUT_GENERAL, p.buf, 1, &c);
+    }
+    full_barrier(cmd);
+    p.value = vk_retirement_value();
+    pending.push_back(std::move(p));
+}
+}  // namespace mv_dump
+
 bool temporal_scene_depth_is(const Texture* depth) {
     State& s = st();
     std::lock_guard lk(s.mu);
-    return depth && s.cam.valid && s.cam.depth == depth && s.cam.frame == texture_frame_no();
+    if (!depth || s.passes.frame != texture_frame_no()) return false;
+    for (int i = 0; i < s.passes.n; i++)   // (better-aa: any of the frame's scene passes, before one is picked)
+        if (s.pass_cam[i].valid && s.pass_cam[i].depth == depth) return true;
+    return false;
 }
+
+namespace {
+/// (better-aa) With s.mu held, at the upscale of in: s.cam made the camera of the frame's pass that is the picture's
+/// (scene_pass.h; RX_VK_TUNE's cam_pass: the rule, pass_log=<n>: the next n picks in the log). None this frame: s.cam as
+/// it was
+void pick_pass(State& s, const Texture* in) {
+    const uint64_t now = texture_frame_no();
+    if (s.passes.frame != now || !s.passes.n || s.cam_used == now) return;   // (none, or this frame's used already)
+    scene_pass::Passes valid = s.passes;   // (only passes with a camera)
+    int map[scene_pass::kMax], n = 0;
+    for (int i = 0; i < s.passes.n; i++)
+        if (s.pass_cam[i].valid && s.pass_cam[i].frame == now) valid.pass[n] = s.passes.pass[i], map[n++] = i;
+    valid.n = n;
+    const int rule = tune_int("cam_pass", scene_pass::kRule);
+    const int got = valid.pick(in, rule);
+    static int log_asked = 0, log_left = 0;
+    if (const int k = tune_int("pass_log", 0); k != log_asked) log_asked = k, log_left = k > 0 ? k : 0;
+    if (log_left > 0) {
+        log_left--;
+        std::string line;
+        for (int i = 0; i < s.passes.n; i++) {
+            const scene_pass::Pass& p = s.passes.pass[i];
+            char b[200];
+            snprintf(b, sizeof b, " | colour #%u depth #%u draws %u order %llu-%llu camera %s", p.color0 ? p.color0->id : 0u,
+                     p.depth ? p.depth->id : 0u, p.draws, (unsigned long long)p.first, (unsigned long long)p.last,
+                     s.pass_cam[i].valid ? "yes" : "no");
+            line += b;
+        }
+        logf("vk: scene pass frame %llu: input #%u, rule %d: %d of %d%s", (unsigned long long)now, in ? in->id : 0u, rule,
+             got >= 0 ? map[got] : -1, s.passes.n, line.c_str());
+    }
+    if (got >= 0) s.cam = s.pass_cam[map[got]];
+}
+}  // namespace
 
 bool temporal_scene_size(uint32_t width, uint32_t height) {
     const State& s = st();
@@ -821,6 +1002,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (mode == ur::GAME) return false;
     State& s = st();
     std::lock_guard lk(s.mu);
+    pick_pass(s, in);   // (better-aa: the frame's pass that is the picture's: s.cam)
     if (!known) {   // (another network of the upscale's shape: only the scene into the picture, the rest untouched and unsaid)
         const Camera& c = s.cam;
         // (the gameplay networks' own formats: they sample the scene's B10G11R11 colour and write the B10G11R11 picture.
@@ -841,6 +1023,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (known && out && out->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) note_output(out, out_level);
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
+    s.cam_used = texture_frame_no();
     struct SkinsDone {     // (the skinned draws, each frame's own too: actor_motion takes them, or they go here)
         State& s;
         ~SkinsDone() { s.skins.clear(); }
@@ -913,7 +1096,8 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         int32_t size[2];
         int32_t flags;
     } pc{};
-    static const bool show_motion = getenv("RX_VK_DLSS_DEBUG") && !strcmp(getenv("RX_VK_DLSS_DEBUG"), "motion");
+    static const bool show_motion_env = getenv("RX_VK_DLSS_DEBUG") && !strcmp(getenv("RX_VK_DLSS_DEBUG"), "motion");
+    const bool show_motion = show_motion_env || tune_int("debug_motion", 0) != 0;   // (better-aa: or live, vk_tune.h)
     // (the motion without the jitter: from this frame's jittered clip space to the frame before's without its jitter.
     // A jitter moves clip x by jitter * w: taken off the previous matrix's first two rows)
     // (the frame before's camera as the engine last drew it: the buffer's own slot for it, 0x180, holds zeros in this version)
@@ -975,9 +1159,12 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         return false;   // (the network writes its output over whatever the evaluation did)
     }
     full_barrier(cmd);
+    mv_dump::take(cmd, f, now, cam.current, previous, cam.projection);   // (better-aa: RX_VK_TUNE's mv_dump, nothing unless asked)
     // (better-aa, from Longshot) AMD FSR 3.1's frame interpolation: this motion, the skinned draws' own in it, over the
     // camera's alone that its own inputs made at this dispatch (vk_fsr3_inputs.h take_motion). Nothing unless it is asked for
-    if (motion && fsr3fi::frames_wanted()) (void)fsr3_inputs::take_motion(cmd, f.motion.image, rw, rh);
+    // (RX_VK_TUNE's fg_chain_motion=0: the camera's alone, as its own inputs made it, for an A/B)
+    if (motion && fsr3fi::frames_wanted() && tune_int("fg_chain_motion", 1) != 0)
+        (void)fsr3_inputs::take_motion(cmd, f.motion.image, rw, rh);
     {
         const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
         const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},

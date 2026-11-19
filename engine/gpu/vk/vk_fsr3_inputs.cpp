@@ -7,6 +7,8 @@
 // projection (nx2/oot_jitter.py: P[0][2] and P[1][2]) is read back from it, given to FSR in render pixels and taken off the
 // motion, with dlss_math.h's functions: the same jitter, read the same way, as DLSS's.
 #include "vk_fsr3_inputs.h"
+#include "vk_tune.h"   // (better-aa: cam_depth_id, cam_pass)
+#include "scene_pass.h"   // (better-aa: the frame's scene passes, as vk_temporal.cpp's)
 
 #include <algorithm>
 #include <atomic>
@@ -56,7 +58,10 @@ struct Camera {
 
 struct State {
     std::mutex mu;
-    Camera cam;               // (this frame's, since the last prepare)
+    Camera cam;               // (this frame's, since the last prepare: its pass's, pick_pass)
+    scene_pass::Passes passes;   // (better-aa: this frame's scene passes, and each one's camera, as vk_temporal.cpp's)
+    Camera pass_cam[scene_pass::kMax];
+    uint64_t cam_used = 0;
     Image color, depth, motion;
     VkDescriptorSetLayout set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -219,15 +224,20 @@ void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Tex
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
-    if (s.cam.valid && s.cam.frame == now && (uint64_t)width * height <= (uint64_t)s.cam.width * s.cam.height)
-        return;   // (the largest one of the frame wins)
+    // (better-aa: RX_VK_TUNE's cam_depth_id, as vk_temporal.cpp's)
+    if (const int want = tune_int("cam_depth_id", 0); want > 0 && (!depth || (int)depth->id != want)) return;
+    bool fresh = false;   // (better-aa: each pass's camera, picked at prepare: vk_temporal.cpp's note has the why)
+    const int pi = s.passes.note(now, color0, depth, width, height, &fresh);
+    if (pi < 0) return;
+    if (fresh) s.pass_cam[pi].valid = false;
+    if (s.pass_cam[pi].valid) return;
     float c[0x230 / 4];
     if (!memory_read_as_submitted(camera, c, sizeof c)) return;
     // (the target's size at 0x120; the projection at 0x70, its w row (0, 0, -1, 0) at 0xa0)
     if (c[0x120 / 4] != (float)width || c[0x124 / 4] != (float)height || c[0xa0 / 4] != 0.0f || c[0xa4 / 4] != 0.0f ||
         c[0xa8 / 4] != -1.0f || c[0xac / 4] != 0.0f)
         return;
-    Camera& k = s.cam;
+    Camera& k = s.pass_cam[pi];
     std::memcpy(k.current, c + 0x30 / 4, sizeof k.current);
     std::memcpy(k.projection, c + 0x70 / 4, sizeof k.projection);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
@@ -236,9 +246,26 @@ void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Tex
     k.valid = true;
 }
 
+namespace {
+/// (better-aa) With s.mu held, for in: s.cam made the camera of the frame's pass that is the picture's (scene_pass.h, by
+/// RX_VK_TUNE's cam_pass as vk_temporal.cpp's pick_pass). None this frame, or taken already: s.cam as it was
+void pick_pass(State& s, const Texture* in) {
+    const uint64_t now = texture_frame_no();
+    if (s.passes.frame != now || !s.passes.n || s.cam_used == now) return;
+    scene_pass::Passes valid = s.passes;
+    int map[scene_pass::kMax], n = 0;
+    for (int i = 0; i < s.passes.n; i++)
+        if (s.pass_cam[i].valid && s.pass_cam[i].frame == now) valid.pass[n] = s.passes.pass[i], map[n++] = i;
+    valid.n = n;
+    const int got = valid.pick(in, tune_int("cam_pass", scene_pass::kRule));
+    if (got >= 0) s.cam = s.pass_cam[map[got]];
+}
+}  // namespace
+
 bool is_scene(const Texture* in) {
     State& s = st();
     std::lock_guard lk(s.mu);
+    pick_pass(s, in);
     return in && s.cam.valid && texture_frame_no() - s.cam.frame <= 1 && in->width == s.cam.width &&
            in->height == s.cam.height;
 }
@@ -247,8 +274,10 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out) 
     State& s = st();
     std::lock_guard lk(s.mu);
     free_dead();
+    pick_pass(s, in);
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
+    s.cam_used = texture_frame_no();
     if (!in || !in_view) return fail("no input view");
     const uint64_t now = texture_frame_no();
     if (!cam.valid || now - cam.frame > 1) return fail("no scene camera this frame");

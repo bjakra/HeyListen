@@ -30,6 +30,17 @@ back end without a rebuild.
 
   FSR 3.1 now makes the frames at any multiplier (2x to 8x) and at Auto, each at its own time between two game frames.
   A *Frame generation by* row picks AMD FSR 3.1 (default) or the built-in blend.
+- **The right scene depth for motion vectors.** The game has no motion vectors: the renderer makes them from the scene's
+  depth and camera. Some places draw the picture with two depth buffers (the Kokiri Sword's crawl tunnel, parts of the
+  forest): the game goes on to a second depth partway through the frame, and only that one lines up with the picture.
+  The first draw's depth used to be taken, and in the tunnel the motion was off by 9-31 px (median; the true motion was
+  0-4 px), which tore the ceiling's roots apart in every frame FSR 3.1 made and fed FSR 4 / DLSS bad history. Every pass of
+  the frame is kept now and the depth the game switched to last for the upscale's input is used (`scene_pass.h`):
+  measured against block matching of the frames themselves, 1.2 px median, 4.1 px at the 90th percentile.
+- **Live switches for tests** (`vk_tune.h`): `RX_VK_TUNE=<file>` of `key=value` lines, read again while the game runs:
+  frame generation's passes (`fsr_fg`, `fg_hud_copy`, `fg_keep_static`, `fg_chain_motion`, `fg_debug`), the motion view
+  (`debug_motion`), the scene pass rule (`cam_pass`, `cam_depth_id`) and logs (`cam_log`, `pass_log`), and `mv_dump=<n>`,
+  which writes the next n frames' colour, depth, motion and camera to `RX_VK_MV_DUMP_DIR` for an offline check.
 
 ## Not possible here
 
