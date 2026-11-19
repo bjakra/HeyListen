@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "vk_fsr3fi.h"
+#include "vk_tune.h"   // (better-aa: live A/B switches)
 #include "vk_menu.h"    // (the Frame generation row)
 #include "vk_gprof.h"   // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_texture.h"
@@ -384,6 +385,8 @@ uint32_t asked() {
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
+    // (better-aa: RX_VK_TUNE's fsr_fg=0 / 1 over the row, live, for an A/B against the built-in blend)
+    if (const int t = tune_int("fsr_fg", -1); t >= 0) return t ? 1u : 0u;
     // (DLSS FG on the row: where DLSS-G makes none; FSR 3.1 FG: all of them; Built-in FG: the renderer's own)
     return opts.framegen >= 1 && opts.framegen_by != 1 ? 1u : 0u;   // (better-aa: the row is 0 AMD FSR 3.1, 1 Built-in)
 }
@@ -394,7 +397,7 @@ uint32_t keep_static_flag() {
         const char* e = getenv("RX_VK_FSR_FG_HUD");
         return e && *e && atoi(e) == 0;
     }();
-    return off ? 0u : kKeepStatic;
+    return tune_int("fg_keep_static", off ? 0 : 1) ? kKeepStatic : 0u;   // (better-aa: live A/B, vk_tune.h)
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.
@@ -971,6 +974,8 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
     // (no debug view, no debug bar; the HUD kept where it is: marked in the colour's alpha, or else guessed)
     // (HUD-less: no HUD in either source to keep, and AMD's inpainting lays this frame's over the made one)
     k.dispatch_flags = hudless ? 0u : keep_static_flag() | (keep_static_flag() && in.hud_mask ? kHudMask : 0u);
+    // (better-aa: RX_VK_TUNE's fg_debug, AMD's own debug drawing: 1 tear lines, 2 reset indicators, 4 the inputs' view)
+    k.dispatch_flags |= (uint32_t)tune_int("fg_debug", 0) & 7u;
     k.max_render_size[0] = rw, k.max_render_size[1] = rh;
     k.optical_flow_half_res_mode = 0;
     k.num_instances = 1;

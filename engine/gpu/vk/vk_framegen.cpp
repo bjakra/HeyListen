@@ -25,6 +25,7 @@
 #include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_menu.h"
 #include "vk_antilag.h"   // (better-aa: AMD Anti-Lag 2, which game frame a set shows)
+#include "vk_tune.h"      // (better-aa: live A/B switches)
 #include "vk_texture.h"
 
 #include "shaders/fg_copy_comp_spv.h"
@@ -768,10 +769,12 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
         const char* e = getenv("RX_VK_FSR_FG_HUDLESS");
         return !(e && *e && atoi(e) == 0);
     }();
-    if (hud.ready && hudless) {   // (the picture before the HUD, interpolated; this frame, HUD and all, laid over it)
+    // (better-aa: RX_VK_TUNE's fg_hudless and fg_hud_copy (0: neither the copy nor the mark, the patched passes' guess) live)
+    const bool use_hud = hud.ready && tune_int("fg_hud_copy", 1) != 0, hudless_now = tune_int("fg_hudless", hudless ? 1 : 0) != 0;
+    if (use_hud && hudless_now) {   // (the picture before the HUD, interpolated; this frame, HUD and all, laid over it)
         in.color = hud.hudless.view, in.color_image = hud.hudless.image;
         in.present = fg.frames[cur].view;
-    } else if (hud.ready) {   // (the same frame, the HUD marked in its alpha: hud_source)
+    } else if (use_hud) {   // (the same frame, the HUD marked in its alpha: hud_source)
         in.color = hud.source.view, in.color_image = hud.source.image;
         in.hud_mask = true;
     }
