@@ -1522,6 +1522,8 @@ class Lifter:
             t = self.plt_target(e)
             if t is not None:
                 self.plt[e] = t
+        if lift_switch("A64_VENEER"):
+            self.find_veneers()
         self.find_setjmp_owners()   # (after the PLT stubs: their callees are resolved through them)
 
     SETJMP_NAMES = ("__setjmp", "setjmp", "_setjmp")
@@ -1984,6 +1986,25 @@ class Lifter:
         t = struct.unpack("<Q", img.read(slot, 8))[0]
         return (t, slot) if t in self.entries else None
 
+    def find_veneers(self):
+        """(HeyListen better-aa; A64_VENEER=0: off) A function whose first instruction is a B to a PLT stub (the sdk's
+        memcpy, bcmp: `B <stub>`, the stub's GOT holding the routine) is that stub for its callers: a call of it becomes a
+        direct call of the GOT's target, as for a call of the stub itself. It was lifted with the stub walked into it, an
+        indirect jump through a site cache on every call. Its own lifted body stays for calls through a pointer; a hooked
+        address is no function here (not walked), so a hook is never bypassed"""
+        for e in self.funcs:
+            if e in self.plt:
+                continue
+            try:
+                w = self.img.word(e)
+            except Exception:
+                continue
+            if (w & 0xFC000000) == 0x14000000:
+                t = self.plt_target(e + (sx(w & 0x3FFFFFF, 26) << 2))
+                if t is not None:
+                    self.plt[e] = t
+                    self.stats["veneers"] += 1
+
     def callee(self, t):
         seen = 0
         while t in self.plt and seen < 4:
@@ -2348,8 +2369,8 @@ class Lifter:
         nins = sum(len(b) for b, _ in self.funcs.values())
         br = sum(1 for b, _ in self.funcs.values() for k, _ in b.values() if k[0] == "br")
         print("functions %d, instructions %d (with shared tails), jump tables %d, indirect BR %d of %d, "
-              "PLT stubs %d, unhandled words %d (%d sites), bad targets %d" % (
-                  len(self.funcs), nins, len(self.jt), len(self.ijump), br, len(self.plt),
+              "PLT stubs %d (veneers to one %d), unhandled words %d (%d sites), bad targets %d" % (
+                  len(self.funcs), nins, len(self.jt), len(self.ijump), br, len(self.plt), self.stats["veneers"],
                   len(self.unhandled), sum(self.unhandled.values()), self.stats["bad_target"]))
         print("jump tables: %d bounded, %d bounded by the function, %d rejected (target outside), %d table not found" % (
             self.stats["jt_bounded"], self.stats["jt_unbounded"], self.stats["jt_out_of_function"],

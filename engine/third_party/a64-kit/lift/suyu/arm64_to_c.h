@@ -2768,6 +2768,214 @@ inline bool Translate(u32 i, u64 pc, std::string& out, bool* unhandled = nullptr
         const u32 rm = (i >> 16) & 31, rn = (i >> 5) & 31, rd = i & 31;
         const u32 len = (i >> 13) & 3, op = (i >> 12) & 1;
         const int regs = (int)len + 1;
+        // (HeyListen better-aa) One call with every operand a constant: recomp_tbl (the runtime header) is a byte
+        // shuffle per table register on SSE4.1 (pshufb + blendv) and the byte loop that was here inline otherwise.
+        // The loop went through a stack copy that no compiler vectorises: the animation code's hot functions run
+        // 695 of these (f_814f9460: 31).
+        std::string s = "recomp_tbl(c->vreg," + std::to_string(rd) + "," + std::to_string(rn) + "," +
+                        std::to_string(rm) + "," + std::to_string(regs) + "," + std::to_string(Q) + "," +
+                        std::to_string(op) + ");";
+        put(s);
+        return true;
+    }
+
+    // LD1-LD4 / ST1-ST4, whole registers. opcode says how many registers and
+    // whether they are interleaved: LD2/3/4 spread consecutive elements across
+    // the registers, while the LD1 forms are plain consecutive blocks.
+    if ((i & 0xBFBF0000) == 0x0C000000 || (i & 0xBFA00000) == 0x0C800000) {
+        const u32 Q = (i >> 30) & 1;
+        const bool post = ((i >> 23) & 1) != 0;
+        const bool load = ((i >> 22) & 1) != 0;
+        const u32 rm = (i >> 16) & 31;
+        const u32 opcode = (i >> 12) & 15, size = (i >> 10) & 3;
+        const u32 rn = (i >> 5) & 31, rt = i & 31;
+        int regs = 0, step = 0;
+        switch (opcode) {
+        case 0x0: regs = 4; step = 4; break;   // LD4/ST4, interleaved
+        case 0x2: regs = 4; step = 1; break;   // LD1/ST1, four registers
+        case 0x4: regs = 3; step = 3; break;   // LD3/ST3, interleaved
+        case 0x6: regs = 3; step = 1; break;
+        case 0x7: regs = 1; step = 1; break;
+        case 0x8: regs = 2; step = 2; break;   // LD2/ST2, interleaved
+        case 0xA: regs = 2; step = 1; break;
+        default: break;
+        }
+        const int esz = 1 << size;
+        const int bytes = Q ? 16 : 8;
+        // The .1D arrangement exists only for the non-interleaved LD1/ST1 forms.
+        const bool shaped = regs > 0 && !(size == 3 && !Q && step != 1);
+        if (shaped) {
+            const int lanes = bytes / esz;
+            const int bits = esz * 8;
+            std::string s = "{ uint64_t _a=" + Xsp(rn) + "; uint64_t _v; ";
+            // Emit in ascending memory order, including non-interleaved LD1/ST1.
+            for (int k = 0; k < lanes * regs; ++k) {
+                const int e = step == 1 ? k % lanes : k / regs;
+                const int r = step == 1 ? k / lanes : k % regs;
+                const std::string off = std::to_string(k * esz);
+                const std::string vr = std::to_string((rt + (u32)r) & 31);
+                const std::string lane = std::to_string(e * esz);
+                if (load) {
+                    s += "_v=recomp_load" + std::to_string(bits) + "(c,_a+" +
+                         off + "); memcpy((uint8_t*)c->vreg[" + vr + "]+" +
+                         lane + ",&_v," + std::to_string(esz) + "); ";
+                } else {
+                    s += "_v=0; memcpy(&_v,(const uint8_t*)c->vreg[" + vr + "]+" + lane + "," +
+                         std::to_string(esz) + "); recomp_store" + std::to_string(bits) +
+                         "(c,_a+" + off + ",_v); ";
+                }
+            }
+            if (load && !Q) {
+                // The 64-bit forms clear the top half of every register written.
+                for (int r = 0; r < regs; ++r) {
+                    s += "c->vreg[" + std::to_string((rt + (u32)r) & 31) + "][1]=0; ";
+                }
+            }
+            if (post) {
+                const std::string adv = (rm == 31)
+                                            ? (std::to_string(regs * bytes) + "ULL")
+                                            : ("c->x[" + std::to_string(rm) + "]");
+                s += "c->x[" + std::to_string(rn) + "]=_a+" + adv + "; ";
+            }
+            s += "}";
+            put(s);
+            return true;
+        }
+    }
+
+    // AESMC / AESIMC: the MixColumns step and its inverse. The matrix and the
+    // xtime-based GF(2^8) multiply below are dynarmic's
+    // (common/crypto/aes.cpp), not written from the specification.
+    if ((i & 0xFFFE0C00) == 0x4E280800) {
+        const u32 opcode = (i >> 12) & 0x1F;
+        const u32 rn = (i >> 5) & 31, rd = i & 31;
+        if (opcode == 4 || opcode == 5) {
+            // AESE: Vd = SubBytes(ShiftRows(Vd EOR Vn)).
+            // AESD is the same with the inverse of each step. ShiftRows rotates
+            // row r left by r, which over the column-major state is a shift of
+            // 4*(i&3) - the permutation dynarmic spells out byte by byte.
+            const bool dec = (opcode == 5);
+            std::string s = "{ uint8_t _s[16],_k[16],_t[16]; const uint8_t* _sb=recomp_aes_sbox(" +
+                            std::string(dec ? "1" : "0") + "); ";
+            s += "memcpy(_s,c->vreg[" + std::to_string(rd) + "],16); ";
+            s += "memcpy(_k,c->vreg[" + std::to_string(rn) + "],16); ";
+            s += "for(int _i=0;_i<16;_i++) _s[_i]=(uint8_t)(_s[_i]^_k[_i]); ";
+            if (dec) {
+                s += "for(int _i=0;_i<16;_i++) _t[_i]=_s[(_i+16-4*(_i&3))&15]; ";
+            } else {
+                s += "for(int _i=0;_i<16;_i++) _t[_i]=_s[(_i+4*(_i&3))&15]; ";
+            }
+            s += "for(int _i=0;_i<16;_i++) _t[_i]=_sb[_t[_i]]; ";
+            s += "memcpy(c->vreg[" + std::to_string(rd) + "],_t,16); }";
+            put(s);
+            return true;
+        }
+        if (opcode == 6 || opcode == 7) {
+            const char* mtx = (opcode == 7)
+                                  ? "{14,11,13,9},{9,14,11,13},{13,9,14,11},{11,13,9,14}"
+                                  : "{2,3,1,1},{1,2,3,1},{1,1,2,3},{3,1,1,2}";
+            std::string s = "{ uint8_t _s[16],_r[16]; static const uint8_t _mx[4][4]={";
+            s += mtx;
+            s += "}; memcpy(_s,c->vreg[" + std::to_string(rn) + "],16); ";
+            s += "for(int _cl=0;_cl<16;_cl+=4) for(int _o=0;_o<4;_o++){ uint8_t _acc=0; ";
+            s += "for(int _k=0;_k<4;_k++){ uint8_t _x=_s[_cl+_k],_y=_mx[_o][_k],_pp=0; ";
+            s += "while(_y){ if(_y&1) _pp=(uint8_t)(_pp^_x); ";
+            s += "_x=(uint8_t)((_x<<1)^((_x>>7)*0x1B)); _y=(uint8_t)(_y>>1); } ";
+            s += "_acc=(uint8_t)(_acc^_pp); } _r[_cl+_o]=_acc; } ";
+            s += "memcpy(c->vreg[" + std::to_string(rd) + "],_r,16); }";
+            put(s);
+            return true;
+        }
+    }
+
+    // PMULL / PMULL2: carry-less multiply of the low or high 64-bit halves.
+    if ((i & 0xBF20FC00) == 0x0E20E000) {
+        const u32 Q = (i >> 30) & 1, U = (i >> 29) & 1;
+        const u32 size = (i >> 22) & 3;
+        const u32 rm = (i >> 16) & 31, rn = (i >> 5) & 31, rd = i & 31;
+        if (!U && size == 3) {
+            const int half = Q ? 1 : 0;   // PMULL2 takes the top half of each source
+            std::string s = "{ uint64_t _a=c->vreg[" + std::to_string(rn) + "][" +
+                            std::to_string(half) + "], _b=c->vreg[" + std::to_string(rm) + "][" +
+                            std::to_string(half) + "]; uint64_t _lo=0,_hi=0; ";
+            s += "for(int _k=0;_k<64;_k++) if((_b>>_k)&1ULL){ _lo^=_a<<_k; ";
+            // Shifting by 64 is undefined, and that is exactly the k=0 case.
+            s += "if(_k) _hi^=_a>>(64-_k); } ";
+            s += "c->vreg[" + std::to_string(rd) + "][0]=_lo; c->vreg[" + std::to_string(rd) +
+                 "][1]=_hi; }";
+            put(s);
+            return true;
+        }
+    }
+
+    // CRC32 / CRC32C. Computed a bit at a time rather than from a table: this
+    // is the same recurrence dynarmic's tables encode, and a cold instruction
+    // does not justify carrying 2 KB of tables in every generated image.
+    if ((i & 0x7FE0E000) == 0x1AC04000) {
+        const u32 sf = i >> 31;
+        const u32 rm = (i >> 16) & 31, rn = (i >> 5) & 31, rd = i & 31;
+        const u32 castagnoli = (i >> 12) & 1, sz = (i >> 10) & 3;
+        // The 64-bit variant is the sz=11 form only, and it needs sf set.
+        if (!(sz == 3 && !sf) && !(sz != 3 && sf) && rd != 31) {
+            const int nbytes = 1 << sz;
+            const char* poly = castagnoli ? "0x82F63B78UL" : "0xEDB88320UL";
+            std::string s = "{ uint32_t _crc=(uint32_t)" + Xz(rn) + "; uint64_t _v=" + Xz(rm) +
+                            "; ";
+            s += "for(int _i=0;_i<" + std::to_string(nbytes) + ";_i++){ ";
+            s += "_crc^=(uint8_t)(_v>>(8*_i)); ";
+            s += "for(int _b=0;_b<8;_b++) _crc=(_crc>>1)^(" + std::string(poly) +
+                 " & (uint32_t)(-(int32_t)(_crc&1u))); } ";
+            s += "c->x[" + std::to_string(rd) + "]=(uint64_t)_crc; }";
+            put(s);
+            return true;
+        }
+    }
+
+    // BSL / BIT / BIF: bitwise select. All three are the same operation with a
+    // different choice of which register supplies the mask and which the
+    // destination, so size picks the variant rather than an element width.
+    // U must be set; the U=0 half of this encoding is AND/BIC/ORR/ORN.
+    if ((i & 0xBF20FC00) == 0x2E201C00) {
+        const u32 Q = (i >> 30) & 1;
+        const u32 size = (i >> 22) & 3;
+        const u32 rm = (i >> 16) & 31, rn = (i >> 5) & 31, rd = i & 31;
+        if (size != 0) {   // size 0 is EOR, handled with the other logicals
+            const int halves = Q ? 2 : 1;
+            std::string s = "{ ";
+            for (int h = 0; h < halves; ++h) {
+                const std::string k = "[" + std::to_string(h) + "]";
+                const std::string d = "c->vreg[" + std::to_string(rd) + "]" + k;
+                const std::string n = "c->vreg[" + std::to_string(rn) + "]" + k;
+                const std::string m = "c->vreg[" + std::to_string(rm) + "]" + k;
+                if (size == 1) {
+                    // BSL: the destination is the mask.
+                    s += d + " = (" + d + " & " + n + ") | (~" + d + " & " + m + "); ";
+                } else if (size == 2) {
+                    // BIT: insert where the second source has bits set.
+                    s += d + " = (" + d + " & ~" + m + ") | (" + n + " & " + m + "); ";
+                } else {
+                    // BIF: insert where it has them clear.
+                    s += d + " = (" + d + " & " + m + ") | (" + n + " & ~" + m + "); ";
+                }
+            }
+            if (!Q) {
+                s += "c->vreg[" + std::to_string(rd) + "][1]=0; ";
+            }
+            s += "}";
+            put(s);
+            return true;
+        }
+    }
+
+    // TBL / TBX: byte-wise table lookup. The table is 1-4 consecutive vector
+    // registers starting at Rn, wrapping at 32, and each byte of Rm indexes it.
+    // An index past the end gives zero for TBL and leaves the byte alone for
+    // TBX, which is the only difference between them.
+    if ((i & 0xBFE08C00) == 0x0E000000) {
+        const u32 Q = (i >> 30) & 1;
+        const u32 rm = (i >> 16) & 31, rn = (i >> 5) & 31, rd = i & 31;
+        const u32 len = (i >> 13) & 3, op = (i >> 12) & 1;
+        const int regs = (int)len + 1;
         const int bytes = Q ? 16 : 8;
         const int tbl_bytes = regs * 16;
         std::string s = "{ uint8_t _t[" + std::to_string(tbl_bytes) + "],_x[" +
@@ -6906,6 +7114,40 @@ inline std::string BuildRuntimeH(bool fastmem, bool guard_gen = false, int fpx =
 #define RECOMP_INLINE inline __attribute__((always_inline))
 #else
 #define RECOMP_INLINE inline
+#endif
+
+/* TBL / TBX (HeyListen better-aa): v the register file, the table regs (1-4) registers from rn on (wrapping at
+   v31), each byte of rm an index into it; an index past the table gives 0 (TBL) or keeps rd's byte (TBX); q 0: the
+   .8B form (rd's upper half zeroed). Every argument is a constant at each call, so the loop unrolls. With SSE4.1
+   each table register is one pshufb, its bytes taken where the index falls in its 16-byte window (one window at
+   most per byte; an index past the table falls in none). Every read comes before the write: rd may be rn or rm. */
+#if defined(__SSE4_1__) && !defined(RECOMP_TBL_LOOP)
+#include <smmintrin.h>
+static RECOMP_INLINE void recomp_tbl(uint64_t (*v)[2], unsigned rd, unsigned rn, unsigned rm, int regs, int q, int tbx) {
+    const __m128i x = _mm_loadu_si128((const __m128i*)v[rm]);
+    __m128i r = tbx ? _mm_loadu_si128((const __m128i*)v[rd]) : _mm_setzero_si128();
+    for (int k = 0; k < regs; k++) {
+        const __m128i rel = _mm_sub_epi8(x, _mm_set1_epi8((char)(16 * k)));
+        const __m128i in = _mm_cmpeq_epi8(_mm_min_epu8(rel, _mm_set1_epi8(15)), rel);
+        r = _mm_blendv_epi8(r, _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)v[(rn + (unsigned)k) & 31]), rel), in);
+    }
+    if (!q) r = _mm_move_epi64(r);
+    _mm_storeu_si128((__m128i*)v[rd], r);
+}
+#else
+static RECOMP_INLINE void recomp_tbl(uint64_t (*v)[2], unsigned rd, unsigned rn, unsigned rm, int regs, int q, int tbx) {
+    uint8_t t[64], x[16], r[16];
+    const int n = q ? 16 : 8;
+    for (int k = 0; k < regs; k++) memcpy(t + 16 * k, v[(rn + (unsigned)k) & 31], 16);
+    memcpy(x, v[rm], 16);
+    memcpy(r, v[rd], 16);
+    for (int i = 0; i < n; i++) {
+        if (x[i] < 16u * (unsigned)regs) r[i] = t[x[i]];
+        else if (!tbx) r[i] = 0;
+    }
+    if (!q) memset(r + 8, 0, 8);
+    memcpy(v[rd], r, 16);
+}
 #endif
 )RT") + FPScanHelpers() + FPFixedHelpers() + R"RT(
 /* Supplied by the host when the recompiled image is driven by an emulator

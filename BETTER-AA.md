@@ -50,6 +50,28 @@ back end without a rebuild.
   the same, and no light-meter pulses (80 frames each: the largest frame-to-frame change of the scene's mean brightness
   0.64 of 255 against 0.75 without). `RX_VK_TUNE`'s `upscale_cut=0` turns it off; `fsr_defer=1` was the measurement that
   bounded it (the engine's work moved to the present: the gain without the cut, the picture wrong).
+- **The renderer's chain on the P-cores (Linux, hybrid Intel CPUs: +7%).** A trace of the frame's hand-offs
+  (`HOS_JOBTRACE` and `tools/bench/critpath.py`) put 17.6 ms of a 20.4 ms frame on the Presentation Thread, most of it
+  waiting in the present for the frame's replay; the game's own threads were idle most of the frame. perf showed the
+  replay's threads running 10-16% of their time on the E-cores. The replay workers and the order thread now run on the
+  P-cores only (`/sys/devices/cpu_core/cpus`), and a thread's replay or present runs there too, its own placement put
+  back after (`vk_replay.cpp pcore_set`, `ReplayPin`). The game's threads are left to the scheduler: putting those on
+  the P-cores as well was 1.5 fps worse. i5-12600KF, Kokiri, 1440p, the same save, two restarts each: 50.0 -> 53.7 fps,
+  the slowest 5 s 48.8 -> 53.0. `RX_VK_PCORE_PIN=0` turns it off; a CPU without `cpu_core` (AMD, older Intel) is left
+  as it was.
+- **Recompiler changes, exact but not faster here.** Tested and kept, but they measured inside the noise on this PC
+  (the old binary 51.5, the new 51.8 fps, three restarts each), because the game's code is not on the frame's critical
+  path here:
+  - NEON TBL / TBX become one `pshufb` + blend per table register (SSE4.1) instead of a byte loop through the stack,
+    695 sites in the animation code's hot functions (`recomp_tbl`, `tests/test_tbl.py`: every form against the Arm
+    rule, both paths, 0 mismatches);
+  - the sdk's `memcpy` / `memmove` / `memset` / `memcmp` / `bcmp` / `strlen` / `strcmp` (and `__memcpy_aarch64`) run as
+    host code (`host/nn_libc.c`, HLE; `RX_GUEST_LIBC=1` at the lift leaves them lifted);
+  - a function that is one branch to a PLT stub is called as that stub's target (`a64_lift.py find_veneers`, 1351 of
+    them; `A64_VENEER=0`: off);
+  - the hot pieces built with `-fsplit-machine-functions` (Linux, with the profile; `RX_SPLIT_COLD=0`: off), and
+    `sqrtf` on the hot list.
+  `tools`-side: the whole game is rebuilt from this tree with `make_game.py --update` and the AppImage's toolchain.
 - **Live switches for tests** (`vk_tune.h`): `RX_VK_TUNE=<file>` of `key=value` lines, read again while the game runs:
   frame generation's passes (`fsr_fg`, `fg_hud_copy`, `fg_keep_static`, `fg_chain_motion`, `fg_debug`), the motion view
   (`debug_motion`), the scene pass rule (`cam_pass`, `cam_depth_id`) and logs (`cam_log`, `pass_log`), the upscale cut

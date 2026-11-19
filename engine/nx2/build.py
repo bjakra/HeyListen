@@ -54,6 +54,12 @@ OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
+# (HeyListen better-aa) Linux, with a profile: the hot pieces' blocks the profile never saw go to .text.split.* (and the link keeps
+# them apart, -z keep-text-section-prefix), so the hot functions' code that runs sits together. 84% by size of the profiled hot
+# functions' code never ran in training, and their hot blocks were spread over 85 MB (research/binary-report.md 5.3): instruction TLB
+# reach. Layout only: the same instructions. RX_SPLIT_COLD=0: as before
+SPLIT_COLD = ["-fsplit-machine-functions"] if PGO and PGO != "gen" and not toolchain.windows() and \
+    os.environ.get("RX_SPLIT_COLD", "1") != "0" else []
 
 
 # (linux) Linux builds: an ELF executable and hookshot_vk.so, the Win32 calls of host/ and gpu/vk on POSIX
@@ -790,6 +796,7 @@ def main():
         # new profile kept the hot code built from the old one)
         with open(PGO, "rb") as f:
             hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO, "-DHOOKSHOT_PROFILE_SHA1=" + hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()[:16]]
+        hot_fl = hot_fl + SPLIT_COLD
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"),
              hot_fl if os.path.basename(s).startswith("code_hot") else fl,
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
@@ -1078,6 +1085,7 @@ def main():
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
                                               "-Wl,--export-dynamic-symbol=hos_posix_*", "-Wl,--export-dynamic-symbol=hos_jt_mark_ext",
                                               "@" + rsp] + HOT_ORDER() +
+                           (["-Wl,-z,keep-text-section-prefix"] if SPLIT_COLD else []) +
                            (["-fprofile-instr-generate"] if PGO == "gen" else []) +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS + (["-l:libstdc++.a"] if SYSROOT else ["-lstdc++"]),   # (engine/native's C++: static with the
                            # AppImage's sysroot, so the player's system needs no particular libstdc++)

@@ -39,6 +39,12 @@ def implemented(host=HOST):
     return names
 
 
+def implemented_in(name, host=HOST):
+    """C names of the HLE functions one host/ file defines"""
+    src = open(os.path.join(host, name), errors="replace").read()
+    return set(re.findall(r"^void (imp_\w+)\(Ctx", src, re.M)) | {"imp_" + n for n in re.findall(r"^HLE\((\w+)\)", src, re.M)}
+
+
 def nested_name(sym):
     """The components of an Itanium nested name (_ZN[K]<len><id>...E), or None if it is not that simple shape"""
     m = re.match(r"_ZNK?", sym)
@@ -98,6 +104,8 @@ def hle_set(modules):
     """(HLE'd symbols, stubbed symbols): the runtime's imp_ functions some module has, the sdk's NVN functions, and
     the OS-facing functions the game modules import that it does not define"""
     hle = {n[4:] for n in implemented()}
+    if os.environ.get("RX_GUEST_LIBC", "0") == "1":   # (better-aa: host/nn_libc.c's memory and string functions left lifted)
+        hle -= {n[4:] for n in implemented_in("nn_libc.c")}
     known = {s["name"] for m in modules for s in m.symbols if s["name"]}
     # (TOTK's SDK functions that MKW's newer SDK no longer has: their HLE stays unused; a typo shows here too)
     missing = sorted(hle - known)
