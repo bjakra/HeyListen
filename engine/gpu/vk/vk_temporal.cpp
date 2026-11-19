@@ -56,6 +56,7 @@
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
 #include "vk_fsr3_inputs.h"   // (better-aa: take_motion, this chain's motion for FSR 3.1's frame interpolation)
 #include "vk_fsr3fi.h"        // (frames_wanted)
+#include "hidden_mesh.h"   // (better-aa: kHiddenAfter, for the log)
 #include "vk_fsr4.h"
 #include "vk_menu.h"
 #include "vk_texture.h"
@@ -682,6 +683,33 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     k.fov_y = plain ? 2.0f * std::atan(1.0f / p11) : 0.0f;
     k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
     k.valid = true;
+}
+
+// ---- (better-aa, ported from Longshot #1370, GPL-3.0) the depth draws of hidden meshes (vk_draw.cpp hidden_depth_draw has the why) ----
+int temporal_hidden_mesh_mode() {
+    static const int mode = [] {
+        const bool rule = env_switch("RX_VK_DLSS_FADED") != 0;          // (unset: on)
+        const bool detail = env_switch("RX_VK_DLSS_FADED_LOG") == 1;   // (unset: off)
+        // (the parallel replay, RX_VK_PARALLEL=2 and more (vk_replay.cpp par_threads), draws a frame's segments on several
+        // threads at once, where the one table is drawn from by one thread at a time: nothing here runs then)
+        const bool parallel = env_switch("RX_VK_PARALLEL") >= 2;
+        if (parallel)
+            logf("vk: upscaler: faded: the parallel replay is on (RX_VK_PARALLEL): hidden meshes' depth draws are drawn");
+        else if (rule)
+            logf("vk: upscaler: faded: while a temporal upscaler or frame generation draws, the depth draws of a skinned mesh "
+                 "that had colour and has had none for %u frames are left out until its colour is back (RX_VK_DLSS_FADED=0 "
+                 "draws them)", hidden_mesh::kHiddenAfter);
+        else
+            logf("vk: upscaler: faded: RX_VK_DLSS_FADED=0: hidden meshes' depth draws are drawn");
+        return parallel ? 0 : (rule ? 1 : 0) | (detail ? 2 : 0);
+    }();
+    return mode;
+}
+
+bool temporal_scene_depth_is(const Texture* depth) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    return depth && s.cam.valid && s.cam.depth == depth && s.cam.frame == texture_frame_no();
 }
 
 bool temporal_scene_size(uint32_t width, uint32_t height) {
