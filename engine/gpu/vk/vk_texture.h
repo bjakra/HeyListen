@@ -155,6 +155,8 @@ void* upload_to_earliest_begin();
 void upload_to_earliest_end(void* h);
 /// Changes with every submission (a texture touched in it is not checked again in it)
 uint32_t texture_epoch();
+/// (better-aa, from Longshot) t is still the texture at gpu, with this image (nothing was destroyed or made again since)
+bool texture_alive(uint64_t gpu, const Texture* t, VkImage image);
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its

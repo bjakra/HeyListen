@@ -563,6 +563,14 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
+/// (better-aa) The Frame generation by row
+const char* tx_framegen_by(int v) { return v == 1 ? "Built-in" : "AMD FSR 3.1"; }
+const char* hn_framegen_by(int v, int variant) {
+    static const char* const t[] = {"AMD FSR 3.1 frame generation: the game's depth, motion and the picture before its HUD.",
+                                    "The renderer's own: the two pictures matched block by block and blended. Lighter, softer."};
+    if (variant < 0) return t[std::clamp(v, 0, 1)];
+    return variant < 2 ? t[variant] : nullptr;
+}
 const char* hn_framegen(int v, int variant) {
     // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp. Variant 1 is that text)
     if (v == 2 && (variant < 0 ? fsr3fi::frames_wanted() != 0 : variant == 1))
@@ -635,6 +643,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+     "Who makes the frames. AMD FSR 3.1: from the game's depth and motion, with the HUD kept where it is. Built-in: a blend "
+     "of the two pictures alone.", hn_framegen_by},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "

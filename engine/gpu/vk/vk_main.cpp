@@ -141,6 +141,15 @@ bool has_extension(const std::vector<VkExtensionProperties>& all, const char* na
 }
 
 bool create_instance() {
+#ifndef _WIN32
+    // (better-aa) Mesa's VK_LAYER_MESA_anti_lag (VK_AMD_anti_lag on RADV) is an implicit layer the loader turns on only with
+    // ENABLE_LAYER_MESA_ANTI_LAG=1: set here, before the loader's first look at the layers, so the AMD Anti-Lag 2 row is
+    // offered without the player setting it. It does nothing until the row is on. RX_VK_ANTILAG=-: left alone
+    {
+        const char* e = getenv("RX_VK_ANTILAG");
+        if (!(e && !strcmp(e, "-")) && !getenv("DISABLE_LAYER_MESA_ANTI_LAG")) setenv("ENABLE_LAYER_MESA_ANTI_LAG", "1", 0);
+    }
+#endif
     uint32_t version = VK_API_VERSION_1_0;
     if (vkEnumerateInstanceVersion) vkEnumerateInstanceVersion(&version);
     if (version < VK_API_VERSION_1_3) {

@@ -54,6 +54,8 @@
 #include "vk_dlss.h"
 #include "vk_draw.h"
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
+#include "vk_fsr3_inputs.h"   // (better-aa: take_motion, this chain's motion for FSR 3.1's frame interpolation)
+#include "vk_fsr3fi.h"        // (frames_wanted)
 #include "vk_fsr4.h"
 #include "vk_menu.h"
 #include "vk_texture.h"
@@ -945,6 +947,9 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         return false;   // (the network writes its output over whatever the evaluation did)
     }
     full_barrier(cmd);
+    // (better-aa, from Longshot) AMD FSR 3.1's frame interpolation: this motion, the skinned draws' own in it, over the
+    // camera's alone that its own inputs made at this dispatch (vk_fsr3_inputs.h take_motion). Nothing unless it is asked for
+    if (motion && fsr3fi::frames_wanted()) (void)fsr3_inputs::take_motion(cmd, f.motion.image, rw, rh);
     {
         const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
         const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},

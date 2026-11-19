@@ -71,6 +71,8 @@ struct State {
     std::chrono::steady_clock::time_point last_time{};
     Frame frame;              // (the last one prepared: take())
     bool have_frame = false;
+    bool told_chain = false;  // (better-aa: take_motion's line, once)
+    std::atomic<uint64_t> taken{0};   // (take_motion's copies: motions_taken)
     std::atomic<uint64_t> upscaled_frame{0};   // (the frame FSR's upscaler last drew: jitter_size, on the game's thread)
     std::atomic<uint32_t> jitter_w{0}, jitter_h{0}, jitter_phases{8};
     struct Dead { uint64_t frame; std::function<void()> free; };
@@ -348,6 +350,42 @@ bool take(Frame& out) {
     if (have) out = s.frame;
     return have;
 }
+
+// (better-aa) Ported from Longshot's vk_fsr3_inputs.cpp take_motion (GPL-3.0)
+bool take_motion(VkCommandBuffer cmd, VkImage motion, uint32_t width, uint32_t height) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    // (this frame's inputs, made at this dispatch, at the chain's size, with a frame before: the chain's then has one too)
+    if (!motion || !s.have_frame || s.frame.frame != texture_frame_no() || s.frame.reset || s.frame.width != width ||
+        s.frame.height != height || !s.motion.image)
+        return false;
+    const auto barrier = [cmd](VkPipelineStageFlags2 src, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst,
+                               VkAccessFlags2 dst_access) {
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = src, b.srcAccessMask = src_access, b.dstStageMask = dst, b.dstAccessMask = dst_access;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &di);
+    };
+    // (the chain's motion written by its prep pass and its actor draws; this one's by fsr3_prep.comp)
+    barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                        {width, height, 1}};
+    vkCmdCopyImage(cmd, motion, VK_IMAGE_LAYOUT_GENERAL, s.motion.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    barrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+    s.taken.fetch_add(1, std::memory_order_relaxed);
+    if (!s.told_chain) {
+        s.told_chain = true;
+        logf("vk: fsr3 inputs: the temporal chain's motion (the skinned draws' own in it) in place of the camera's alone, "
+             "%ux%u (frame %llu)", width, height, (unsigned long long)s.frame.frame);
+    }
+    return true;
+}
+
+uint64_t motions_taken() { return st().taken.load(std::memory_order_relaxed); }
 
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
     State& s = st();

@@ -3170,6 +3170,15 @@ bool texture_kept_since(const Texture* tex, uint64_t from, uint64_t to) {
     return destroy_gens.kept(tex, from, to);
 }
 
+// (better-aa, from Longshot) t is still the texture at gpu, with the same image: frame generation's HUD copy reads a
+// picture noted earlier in the frame (vk_framegen.cpp hud_source)
+bool texture_alive(uint64_t gpu, const Texture* t, VkImage image) {
+    auto [a, b] = by_gpu.equal_range(gpu);
+    for (auto it = a; it != b; ++it)
+        if (it->second == t) return t->image == image;
+    return false;
+}
+
 uint32_t texture_epoch() {
     return epoch;
 }
