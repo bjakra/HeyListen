@@ -10,6 +10,9 @@ back end without a rebuild.
 - **FSR Native AA (100%).** AMD FSR 3.1 and AMD FSR 4 get a *Native AA (100%)* step on the Render resolution row, ahead
   of Quality: the 3D is drawn at the output's full size and FSR only smooths its edges. Before, a saved 100% was drawn
   at 67% (`upscaler_rows.h`).
+- **Custom render scale.** Render resolution gets a *Custom* step (after Native AA for FSR, after 100% for the game's
+  own upscaler) and a *Custom render scale* slider, 50 to 100% in 1% steps, applied live and saved as
+  `custom_render_scale`. The exact share reaches the game (85% draws 2176x1224 at 1440p), not the nearest twelfth.
 - **Sharpness inside the upscaler.** The Sharpness row now drives FSR's own RCAS: FSR 4 through its dispatch, FSR 3.1
   through AMD's `accumulate_sharpen` and `rcas` passes. The 3D is sharpened before the HUD, and the window pass leaves
   its own sharpening out while an upscaler sharpens. `RX_VK_UPSCALER_SHARPEN=0` restores the old behaviour.
