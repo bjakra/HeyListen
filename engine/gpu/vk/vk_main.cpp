@@ -31,6 +31,7 @@
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
+#include "vk_antilag.h"   // (better-aa: AMD Anti-Lag 2)
 #include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "mesh_mode.h"
@@ -383,6 +384,7 @@ bool create_device() {
     bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
+    antilag_device_extensions(want, exts);   // (better-aa: AMD Anti-Lag 2's, vk_antilag.cpp)
 
     // the queue: one family for graphics, compute and transfer
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -493,6 +495,7 @@ bool create_device() {
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afloat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
     if (atomic_float) *tail = &afloat, tail = &afloat.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
+    antilag_device_features(tail);   // (antiLag, when VK_AMD_anti_lag is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
@@ -653,6 +656,7 @@ bool create_device() {
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();
+    antilag_device_created();
     // (longshot: on the Steam Deck the GPU held at amdgpu's peak power state while the game runs (RX_VK_GPU_CLOCK=0: not), gpu_clock.h;
     // the device's render node from VK_EXT_physical_device_drm, which needs no enabling to be asked)
     gpu_clock_device_created(has_extension(exts, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME));

@@ -24,6 +24,7 @@
 #include "vk_fsr3fi.h"
 #include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_menu.h"
+#include "vk_antilag.h"   // (better-aa: AMD Anti-Lag 2, which game frame a set shows)
 #include "vk_texture.h"
 
 #include "shaders/fg_copy_comp_spv.h"
@@ -60,6 +61,7 @@ struct OutSet {
     int shown = -1;
     int64_t due[kMaxMult] = {};
     bool game[kMaxMult] = {};
+    uint64_t antilag_id = 0;   // (better-aa: AMD Anti-Lag 2, the game frame it was made at; its present stage with that frame)
 };
 struct Job {
     OutSet* set;
@@ -447,6 +449,8 @@ void display_main() {
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
             present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
+            // (better-aa: only the set's game frame gives AMD Anti-Lag 2 its present stage; the made frames none)
+            antilag_present_frame = (timed ? j.set->game[k] : k == j.set->made) ? j.set->antilag_id : 0;
             present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
             menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
@@ -488,7 +492,8 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
     const uint32_t pw = has_crop ? std::min((uint32_t)crop[2], sw - (uint32_t)crop[0]) : sw;
     const uint32_t ph = has_crop ? std::min((uint32_t)crop[3], sh - (uint32_t)crop[1]) : sh;
     const bool shrink = pw > dw || ph > dh;
-    if (!opts.upscale && !opts.sharpness && !shrink) return VK_NULL_HANDLE;
+    const int sharpness = window_sharpness();   // (better-aa: 0 while the upscaler sharpens the 3D itself)
+    if (!opts.upscale && !sharpness && !shrink) return VK_NULL_HANDLE;
     if (!init_scale()) return VK_NULL_HANDLE;
     // (the game draws into part of its window textures, 2048 x 1152 of 2560 x 1440 here: the filter was given the whole texture, and the
     // picture came out in the top left corner of the window with black around it. The crop first, then the filter)
@@ -534,7 +539,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         scale.scaled_w = dw, scale.scaled_h = dh;
         to_general(cmd, scale.scaled.image);
     }
-    const struct { int mode; float sharp; } pc{opts.upscale, opts.sharpness / 100.0f};
+    const struct { int mode; float sharp; } pc{opts.upscale, sharpness / 100.0f};
     pass(cmd, scale.pipe, {{src, scale.linear}, {scale.scaled.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     static const bool report = getenv("RX_VK_UPSCALE_LOG") != nullptr;
     static bool reported = false;
@@ -542,7 +547,7 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         reported = true;
         logf("vk: upscale dispatched: mode %d, sharpness %d%% (of RCAS's strongest, neighbours one source pixel apart), source %ux%u, "
              "crop request %d,%d %dx%d, destination %ux%u",
-             opts.upscale, opts.sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
+             opts.upscale, sharpness, sw, sh, crop ? crop[0] : 0, crop ? crop[1] : 0,
              crop ? crop[2] : (int)sw, crop ? crop[3] : (int)sh, dw, dh);
     }
     return scale.scaled.image;
@@ -673,6 +678,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     pass(cmd, fg.luma, {{fg.frames[cur].view, fg.nearest}, {fg.lumas[cur].view, VK_NULL_HANDLE}}, qw, qh);
     set->made = 0;
     set->shown = -1;
+    set->antilag_id = antilag_frame();
     if (auto_rate) {   // (Auto: a frame for each of the display's refreshes, at its own time)
         const int mhz = display_refresh_mhz();
         const int64_t period = (int64_t)(1e12 / (mhz > 0 ? mhz : 60000));

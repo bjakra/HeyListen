@@ -27,11 +27,13 @@
 
 #include "shaders/dlss_out_comp_spv.h"   // (the network's output from a picture: its encoding squared back, as for DLSS)
 #include "shaders/fsr3_accumulate_comp_spv.h"
+#include "shaders/fsr3_accumulate_sharpen_comp_spv.h"
 #include "shaders/fsr3_luma_instability_comp_spv.h"
 #include "shaders/fsr3_luma_pyramid_comp_spv.h"
 #include "shaders/fsr3_luma_pyramid_nowave_comp_spv.h"
 #include "shaders/fsr3_prepare_inputs_comp_spv.h"
 #include "shaders/fsr3_prepare_reactivity_comp_spv.h"
+#include "shaders/fsr3_rcas_comp_spv.h"
 #include "shaders/fsr3_shading_change_comp_spv.h"
 #include "shaders/fsr3_shading_change_pyramid_comp_spv.h"
 #include "shaders/fsr3_shading_change_pyramid_nowave_comp_spv.h"
@@ -59,12 +61,15 @@ constexpr Kind SHADING_CHANGE[]{T, I, U};
 constexpr Kind PREPARE_REACTIVITY[]{T, T, T, T, T, T, T, T, T, I, I, I, U};
 constexpr Kind LUMA_INSTABILITY[]{T, T, T, T, T, T, T, I, I, U};
 constexpr Kind ACCUMULATE[]{T, T, T, T, T, T, T, T, T, I, I, I, U};
+/// (better-aa) RCAS: exposure, its input (the accumulation's internal colour), the output, cbFSR3Upscaler and cbRCAS
+constexpr Kind RCAS[]{T, T, I, U, U};
 
 #define PASS(n, spv, b) PassInfo{n, spv, sizeof spv, b, sizeof b / sizeof b[0]}
 
 /// The passes, in the order PassId numbers them. The two _nowave pyramids are alternatives to the two before them, for
-/// devices without the subgroup operations the single-pass downsampler wants. FSR's own sharpening (accumulate_sharpen and
-/// RCAS, compiled with the rest) is not used: the renderer's Sharpness row sharpens the finished picture for every upscaler
+/// devices without the subgroup operations the single-pass downsampler wants. (better-aa) FSR's own sharpening: with the
+/// Sharpness row above 0 the accumulation is accumulate_sharpen, which leaves the output to RCAS (Inputs::sharpness), as
+/// AMD's FFX_FSR3UPSCALER_ENABLE_SHARPENING does
 const PassInfo PASSES[]{
     PASS("prepare_inputs", FSR3_PREPARE_INPUTS_COMP_SPV, PREPARE_INPUTS),
     PASS("luma_pyramid", FSR3_LUMA_PYRAMID_COMP_SPV, LUMA_PYRAMID),
@@ -76,6 +81,8 @@ const PassInfo PASSES[]{
     PASS("prepare_reactivity", FSR3_PREPARE_REACTIVITY_COMP_SPV, PREPARE_REACTIVITY),
     PASS("luma_instability", FSR3_LUMA_INSTABILITY_COMP_SPV, LUMA_INSTABILITY),
     PASS("accumulate", FSR3_ACCUMULATE_COMP_SPV, ACCUMULATE),
+    PASS("accumulate_sharpen", FSR3_ACCUMULATE_SHARPEN_COMP_SPV, ACCUMULATE),
+    PASS("rcas", FSR3_RCAS_COMP_SPV, RCAS),
 };
 #undef PASS
 
@@ -89,6 +96,8 @@ enum PassId : size_t {
     P_PREPARE_REACTIVITY,
     P_LUMA_INSTABILITY,
     P_ACCUMULATE,
+    P_ACCUMULATE_SHARPEN,
+    P_RCAS,
     kPassCount
 };
 static_assert(sizeof PASSES / sizeof PASSES[0] == kPassCount, "PassId must name every pass");
@@ -166,6 +175,18 @@ void memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcce
 
 constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, 1};
 
+/// (better-aa) A float as IEEE half bits, for cbRCAS's packed pair (ffxPackHalf2x16): normal values only, which the
+/// sharpness's 0.25 .. 1 are
+uint32_t half_bits(float f) {
+    uint32_t x;
+    memcpy(&x, &f, 4);
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int exp = (int)((x >> 23) & 0xff) - 127 + 15;
+    if (exp <= 0) return sign;
+    if (exp >= 31) return sign | 0x7c00u;
+    return sign | (uint32_t)exp << 10 | ((x >> 13) & 0x3ffu);
+}
+
 struct State {
     bool tried = false;
     bool ok = false;
@@ -184,7 +205,7 @@ struct State {
     VkBuffer uniforms = VK_NULL_HANDLE;
     VmaAllocation uniforms_memory = nullptr;
     void* uniforms_mapped = nullptr;
-    VkDeviceSize slot_fsr = 0, slot_spd = 0, frame_stride = 0;
+    VkDeviceSize slot_fsr = 0, slot_spd = 0, slot_lut = 0, slot_rcas = 0, frame_stride = 0;
     uint32_t uniform_frame = 0;
     // History, as fsr3upscalerDispatch carries it.
     int32_t previous_render_size[2]{};
@@ -345,7 +366,9 @@ bool make_uniforms() {
     const auto round_up = [align](VkDeviceSize n) { return (n + align - 1) / align * align; };
     g.slot_fsr = round_up(sizeof(Constants));
     g.slot_spd = round_up(sizeof(SpdConstants));
-    g.frame_stride = g.slot_fsr + g.slot_spd + round_up(128 * sizeof(int16_t));
+    g.slot_lut = round_up(128 * sizeof(int16_t));
+    g.slot_rcas = round_up(4 * sizeof(uint32_t));   // (cbRCAS, after the Lanczos table)
+    g.frame_stride = g.slot_fsr + g.slot_spd + g.slot_lut + g.slot_rcas;
     return create_buffer(g.frame_stride * kUniformFrames, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                          true, g.uniforms, g.uniforms_memory, &g.uniforms_mapped);
 }
@@ -562,6 +585,17 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         }
         memcpy(mapped + lut_at, weights, sizeof weights);
     }
+    const VkDeviceSize rcas_at = lut_at + g.slot_lut;
+    const bool sharpen = in.sharpness > 0.0f;
+    if (sharpen) {   // (cbRCAS as ffx_fsr3upscaler.cpp makes it: FsrRcasCon of the sharpness remapped to 2 (none) .. 0 (most))
+        uint32_t c[4]{};
+        const float stops = -2.0f * std::min(in.sharpness, 1.0f) + 2.0f;
+        const float lin = std::exp2(-stops);
+        const uint32_t h = half_bits(lin);
+        memcpy(&c[0], &lin, 4);
+        c[1] = h | (h << 16);
+        memcpy(mapped + rcas_at, c, sizeof c);
+    }
     flush_mapped(g.uniforms_memory, g.frame_stride * kUniformFrames);
 
     const uint32_t p = g.parity, q = p ^ 1u;
@@ -660,11 +694,15 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         {exposure, tex(g.dilated_reactive_masks), tex(g.dilated_motion_vectors), tex(g.frame_info), tex(g.luma_history[p]),
          tex(g.farthest_depth_mip1), current_luma, tex(g.luma_history[q]), tex(g.farthest_depth), cb_fsr},
         groups(rw, 8), groups(rh, 8));
-    run(P_ACCUMULATE,
+    run(sharpen ? P_ACCUMULATE_SHARPEN : P_ACCUMULATE,
         {exposure, tex(g.dilated_reactive_masks), tex(g.dilated_motion_vectors), tex(g.internal_upscaled[p]),
          tex(g.lanczos_lut), tex(g.farthest_depth_mip1), current_luma, tex(g.farthest_depth), color,
          tex(g.internal_upscaled[q]), tex(g.output), tex(g.new_locks), cb_fsr},
         groups(uw, 8), groups(uh, 8));
+    if (sharpen)   // (the output from the accumulation's colour, sharpened: 16 x 16 pixels a workgroup, as AMD dispatches it)
+        run(P_RCAS, {exposure, tex(g.internal_upscaled[q]), tex(g.output), cb_fsr,
+                     Resource{VK_NULL_HANDLE, g.uniforms, base + rcas_at, g.slot_rcas}},
+            groups(uw, 16), groups(uh, 16));
     g.parity = q;
     return true;
 }
@@ -787,6 +825,8 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     ai.camera = f.camera;
     ai.frame_time_ms = f.frame_ms;
     ai.reset = f.reset;
+    ai.sharpness = upscaler_sharpness();
+    if (ai.sharpness > 0.0f) upscaler_sharpened();
     if (!fsr3::upscale(cmd, ai)) return fail("its passes could not be recorded");
     {
         const int32_t pc[2] = {(int32_t)ow, (int32_t)oh};

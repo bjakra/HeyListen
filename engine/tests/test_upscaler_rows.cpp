@@ -75,8 +75,12 @@ int main() {
                                                           ur::upscaler_shown(true, false));
         CHECK("FSR 3.1's modes are DLSS's shares", ur::scales_by_mode(ur::FSR3) && ur::scales_by_mode(DLSS) &&
                                                      !ur::scales_by_mode(DLAA) && !ur::scales_by_mode(GAME));
-        CHECK("FSR 3.1 steps as DLSS does", ur::step(ur::FSR3, 0, 1) == 3 && ur::step(ur::FSR3, 3, 1) == 5 &&
-                                              ur::step(ur::FSR3, 6, 1) == 0 && ur::snap(ur::FSR3, 2) == 3);
+        CHECK("FSR 3.1 steps through Native AA, then DLSS's modes", ur::step(ur::FSR3, 0, 1) == 1 && ur::step(ur::FSR3, 1, 1) == 3 &&
+                                              ur::step(ur::FSR3, 3, 1) == 5 && ur::step(ur::FSR3, 6, 1) == 0 &&
+                                              ur::step(ur::FSR3, 0, -1) == 6 && ur::snap(ur::FSR3, 2) == 3 && ur::snap(ur::FSR3, 1) == 1);
+        CHECK("FSR's 100% is Native AA, DLSS has none", !strcmp(ur::mode_name(ur::FSR3, 1), "Native AA") &&
+                                                          !strcmp(ur::mode_name(ur::FSR4, 1), "Native AA") && !ur::mode_name(DLSS, 1) &&
+                                                          !strcmp(ur::mode_name(ur::FSR4, 3), "Quality") && !ur::mode_name(GAME, 3));
         CHECK("the model row waits with FSR 3.1", ur::model_fixed(ur::FSR3, false) && !ur::model_fixed(DLSS, false) &&
                                                     !ur::model_fixed(DLAA, false));
         CHECK("FSR 3.1 has a Render resolution", !ur::resolution_fixed(ur::FSR3));
@@ -107,7 +111,7 @@ int main() {
         CHECK("FSR 4's modes are DLSS's shares", ur::scales_by_mode(FSR4) && !ur::scales_by_mode(FSR4_AA));
         for (int v = 0; v < ur::kValues; v++)
             for (int dir : {1, -1})
-                CHECK("FSR 4 steps as DLSS", ur::step(FSR4, v, dir) == ur::step(DLSS, v, dir) && ur::snap(FSR4, v) == ur::snap(DLSS, v));
+                CHECK("FSR 4 steps as FSR 3.1", ur::step(FSR4, v, dir) == ur::step(ur::FSR3, v, dir) && ur::snap(FSR4, v) == ur::snap(ur::FSR3, v));
         CHECK("FSR 4's native AA does not step", ur::step(FSR4_AA, 3, 1) == 3 && ur::snap(FSR4_AA, 5) == 5);
         CHECK("the model row waits with FSR 4", ur::model_fixed(FSR4, false) && ur::model_fixed(FSR4_AA, false));
     }

@@ -18,6 +18,7 @@ struct Options {
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440; read once, at the start (host/nn_applet.c)
     int upscale = 0;      // to the window (Window scaling filter, saved as upscaling): 0 off (the plain copy), 1 Catmull-Rom, 2 Lanczos
     int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
+    int antilag = 0;      // (better-aa) AMD Anti-Lag 2: 0 off, 1 on (vk_antilag.cpp; GPUs whose driver has VK_AMD_anti_lag)
     int dlss = 0;         // the Upscaler (its name from before FSR: options files and the tests' stand-ins keep it): 0 the game's
                           // own network, 1 NVIDIA DLSS, 2 NVIDIA DLAA (a build with NVIDIA's SDK only), 3 AMD FSR 3.1 (vk_fsr3.cpp),
                           // 4 AMD FSR 4, 5 its native AA (a build with FSR 4 only). upscaler_rows.h; vk_temporal.cpp. Saved as dlss
@@ -84,6 +85,14 @@ void menu_tick();             // (each frame shown: the keys, while the game's w
 bool menu_is_open();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
+/// (better-aa) The Sharpness row as the upscaler's own sharpening (FSR 3.1's and FSR 4's RCAS), 0 to 1: 0 with the row at 0
+/// or RX_VK_UPSCALER_SHARPEN=0 (the row sharpening at the window then, as before)
+float upscaler_sharpness();
+/// The upscaler drawing this frame sharpened it: the window's pass leaves its sharpening out while frames keep coming so
+void upscaler_sharpened();
+/// The Sharpness the window's pass applies, 0 to 100: the row's, or 0 while the upscaler sharpens (upscaler_sharpened in the
+/// last 250 ms)
+int window_sharpness();
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
 int menu_heart_protection();
 int menu_player_flight();

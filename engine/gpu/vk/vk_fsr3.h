@@ -38,6 +38,8 @@ struct Inputs {
     fsr3_math::Camera camera;     ///< device_to_view_depth (fsr3_math.h)
     float frame_time_ms = 16.667f;
     bool reset = false;
+    /// (better-aa) FSR's own sharpening, 0 (off: the accumulation writes the output) to 1 (RCAS's strongest)
+    float sharpness = 0.0f;
 };
 
 /// Whether this device can run the passes: push descriptors enough for the widest pass, storage images in every format the

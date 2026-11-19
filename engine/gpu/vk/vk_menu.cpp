@@ -45,6 +45,7 @@
 #include "vk_fsr4.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
+#include "vk_antilag.h"   // (better-aa: AMD Anti-Lag 2)
 #include "upscaler_rows.h"
 #include "menu_restart.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
@@ -152,6 +153,15 @@ const char* tx_filter(int v) { return filter_needed() ? tx_upscale(v) : "Not nee
 const char* tx_reflex(int v) {
     static const char* t[] = {"Off", "On", "On + Boost"};
     return t[reflex_available() ? std::clamp(v, 0, 2) : 0];
+}
+/// (better-aa) AMD Anti-Lag 2: Off / On, or Off where the driver has no VK_AMD_anti_lag
+const char* tx_antilag(int v) { return antilag_available() && v ? "On" : "Off"; }
+const char* hn_antilag(int v, int variant) {
+    static const char* const t[] = {"The game as without it.",
+                                    "The driver starts each frame as late as it can, for less delay from input to the screen."};
+    static const char* const none = "Not available here: it needs a driver with VK_AMD_anti_lag (AMD's, or Mesa's anti-lag layer).";
+    if (variant < 0) return antilag_available() ? t[std::clamp(v, 0, 1)] : none;
+    return variant == 0 ? t[std::clamp(v, 0, 1)] : variant == 1 ? none : nullptr;
 }
 /// Reflex: on the value, or that it is not available here (the row shows Off)
 const char* hn_reflex(int v, int variant) {
@@ -315,7 +325,7 @@ const char* tx_resolution(int v) {
     if (up == ur::DLAA) return "Native (DLAA)";
     if (up == ur::FSR4_AA) return "Native (FSR 4)";
     if (!ur::percent(v)) return "Auto (dynamic)";
-    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
+    if (const char* mode = ur::mode_name(up, v)) {
         snprintf(b, sizeof b, "%s (%d%%)", mode, ur::percent(v));
         return b;
     }
@@ -349,7 +359,9 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::FSR3 || up == ur::FSR4) {   // (the same modes, AMD's ratios)
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and FSR follows.";
-        case 67: return "FSR's Quality mode, 1.5x: its sharpest.";
+        case 100: return "FSR's Native AA: the 3D at the output's full size, FSR smoothing its edges alone. The sharpest, and the "
+                         "slowest.";
+        case 67: return "FSR's Quality mode, 1.5x: its sharpest upscale.";
         case 58: return "FSR's Balanced mode, 1.7x.";
         case 50: return "FSR's Performance mode, 2x: faster, and softer.";
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
@@ -362,7 +374,7 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
-    return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
+    return ((value == &opts.send_perf || value == &opts.send_crash) && !telemetry_available()) || (value == &opts.reflex && !reflex_available()) || (value == &opts.antilag && !antilag_available()) || (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::resolution_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
 }
@@ -634,6 +646,9 @@ Row rows[] = {
      "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
+    {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
+     "AMD and Mesa (RADV) drivers: each frame starts as late as it can, for less input delay. Works with frame generation.",
+     hn_antilag},
     {TAB_GRAPHICS, "Frame rate limit", &opts.fps_limit, 0, 5, 1, tx_fps_limit,   // (HeyListen: HL_OPT_FPS_LIMIT, vk_opt_ids.h, host/nn_vi.c)
      "The game's own frame rate. Above 60 it needs Game speed on Real time (the game's time follows the clock, so it does not run "
      "faster), and your display must run that fast to show every frame.", nullptr, false, true},
@@ -1001,6 +1016,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.resolution) return "resolution";
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.antilag) return "amd_anti_lag";
     if (r.value == &opts.send_perf) return "send_performance_stats";   // (host/hos_telemetry.h reads both of these)
     if (r.value == &opts.send_crash) return "send_crash_reports";
     static char k[32];
@@ -2081,6 +2097,22 @@ void menu_init() {
 }
 
 bool resolution_auto() { return upscaler_rows::snap(upscaler(), opts.resolution) == 0; }
+namespace {
+std::atomic<int64_t> g_upscaler_sharpened_ms{-1000000};   // (steady clock, ms: when an upscaler last sharpened a frame)
+int64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+float upscaler_sharpness() {
+    static const bool off = getenv("RX_VK_UPSCALER_SHARPEN") && atoi(getenv("RX_VK_UPSCALER_SHARPEN")) == 0;
+    return off ? 0.0f : std::clamp(opts.sharpness, 0, 100) / 100.0f;
+}
+void upscaler_sharpened() { g_upscaler_sharpened_ms.store(steady_ms(), std::memory_order_relaxed); }
+int window_sharpness() {
+    // (an upscaler's picture is sharpened once, by its RCAS, before the HUD: the HUD and the game's menus over it stay as drawn.
+    // Frames no upscaler drew (menus, movies, the game's own upscale) keep the row's sharpening at the window)
+    return steady_ms() - g_upscaler_sharpened_ms.load(std::memory_order_relaxed) < 250 ? 0 : opts.sharpness;
+}
 int resolution_scale() {
     const int drawn = upscaler_rows::snap(upscaler(), opts.resolution);
     {   // (said when it changes: the choice kept and what the Upscaler shown draws at, e.g. 58% kept, 50% drawn by the game's own)

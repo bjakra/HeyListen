@@ -16,6 +16,7 @@
 #include <cstdlib>
 
 #include "vk_internal.h"
+#include "vk_menu.h"   // (better-aa: the Sharpness row, upscaler_sharpness)
 #include "vk_temporal.h"
 
 #ifdef HOOKSHOT_FSR
@@ -419,8 +420,12 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     d.motionVectorScale = {1.0f, 1.0f};             // (render pixels already, towards the frame before)
     d.renderSize = {f.render_w, f.render_h};
     d.upscaleSize = {f.output.width, f.output.height};
-    d.enableSharpening = false;   // (the Sharpness row sharpens at the window, after the HUD)
-    d.sharpness = 0.0f;
+    // (better-aa) The Sharpness row as FSR 4's own RCAS, on the 3D before the HUD; the window's pass then leaves it out
+    // (vk_menu.h window_sharpness). RX_VK_UPSCALER_SHARPEN=0: the row at the window, as before
+    const float sharpness = upscaler_sharpness();
+    d.enableSharpening = sharpness > 0.0f;
+    d.sharpness = sharpness;
+    if (d.enableSharpening) upscaler_sharpened();
     d.frameTimeDelta = frame_ms;
     d.preExposure = 1.0f;
     d.reset = f.reset;
