@@ -79,7 +79,7 @@ def main():
     args = p.parse_args()
     src = (VK / "vk_replay.cpp").read_text(encoding="utf-8")
 
-    split = block(src, "void split_part(VkCommandBuffer& cmd) {")   # (the part's end: maybe_split says when)
+    split = block(src, "void split_part(VkCommandBuffer& cmd, bool early) {")   # (the part's end: maybe_split says when)
     if "static const bool part_flush = [] {" not in split:
         raise SystemExit("FAIL: split_part writes the uniform updates at every part's end (no part_flush decision)")
     code = "\n".join(line.split("//")[0] for line in split.splitlines())

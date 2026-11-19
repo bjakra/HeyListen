@@ -58,8 +58,12 @@ def main():
          "take_capture: the wait and the copies as before otherwise")
     kept = take[take.index("if (!c->copied.empty() && g && c->map) {"):]
     reg = kept[kept.index("if (late_defer) {"):]
-    need("f.value = c->late_value, f.gen = g, f.map = (uint8_t*)b.map" in reg and "late_fix_push(std::move(f));" in reg,
-         "take_capture: a kept buffer's fix registered")
+    need("f.value = c->late_value, f.seq = c->late_seq, f.gen = g, f.map = (uint8_t*)b.map" in reg and "late_fix_push(std::move(f));" in reg,
+         "take_capture: a kept buffer's fix registered (with its early write-backs' number, better-aa)")
+    # (better-aa, the upscale cut) a late page's early number counts only once a submit that signals it was sent; one landed already
+    # is not late at all
+    need("if (q && q <= rdone) continue;" in mem and "if (q && q <= rsent) lseq = std::max(lseq, q);" in mem and
+         "c->late_seq = all_early ? lseq : 0" in mem, "take_capture: early numbers only when sent, every late page's or none")
     push = body(mem, "void late_fix_push(LateFix&& f) {")
     need("late_fixes.push_back(std::move(f));" in push and "late_fix_top.store(std::max(top, v)" in push and
          push.index("late_fix_wake(v);") > push.index("late_fixes.push_back"), "late_fix_push: registered, the top raised only, then woken")
@@ -69,7 +73,7 @@ def main():
          "take_capture: a deferred late slot of a texture's storage keeps its shadow copy (RX_VK_LATE_DEFER_TEX), =0 waits as before")
 
     ap = body(mem, "void memory_late_fix_apply(uint64_t done) {")
-    need("if (f.value > done) {" in ap and "top = std::max(top, f.value);" in ap and "late_fixes.front()" not in ap and
+    need("if (f.value > done && !(f.seq && f.seq <= rdone)) {" in ap and "top = std::max(top, f.value);" in ap and "late_fixes.front()" not in ap and
          "guarded_copy(f.map + (uint64_t)slot * 4096, base + ((uint64_t)page << kPageShift), 4096);" in ap and
          "flush_mapped(f.alloc, f.nbytes);" in ap and "late_fix_gens[k].store(0" in ap and
          "late_fix_top.store(top, std::memory_order_release);" in ap,

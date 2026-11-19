@@ -381,6 +381,14 @@ void gpu_tail_note_late(uint64_t v);   // (TICK-057, vk_replay.cpp: a capture wa
 /// reached, applied (the late slots copied again from guest memory). vk_replay.cpp: the highest timeline value a submit sent to
 /// the queue signals; the fix thread woken for a fix of value v
 uint64_t memory_late_fix_pending();
+uint64_t memory_late_fix_seq();   // (better-aa: the recordings' number every pending fix is reached by; 0: wait for the value)
+// (better-aa, early write-backs: vk_memory.cpp wb_early) the part ended before the upscale: its write-backs collected, then given the
+// recording's number it was submitted as; a range's number when every page of it written back has one (0: wait for its value)
+void memory_wb_early_collect();
+void memory_wb_early_commit(uint64_t seq);
+uint64_t memory_writeback_early(uint64_t guest, uint64_t size);
+uint64_t vk_rec_completed();      // (vk_replay.cpp: the recordings' timeline as the GPU has it)
+uint64_t vk_rec_signal_sent();    // (vk_replay.cpp: the highest recording number a submit sent to the queue signals)
 void memory_late_fix_apply(uint64_t done);
 void memory_late_fix_wait_range(uint64_t guest, uint64_t n);   // (TICK-060m: before a CPU upload reads guest memory: a pending late page's value)
 uint64_t vk_timeline_signal_sent();

@@ -52,7 +52,7 @@ def main():
         raise SystemExit("maybe_split submits a part itself again: the end belongs to split_part")
 
     # the end itself: the request is taken back first, and the part is ended and begun as before
-    cut = block(replay, "void split_part(VkCommandBuffer& cmd) {")
+    cut = block(replay, "void split_part(VkCommandBuffer& cmd, bool early) {")
     order("split_part", cut, ["part_end_wanted = false;", "if (!rec_cur || rec_parts + 1 >= kMaxParts || dump_on()) return;",
                               "end_pass(cmd);", "memory_end_submission(cmd);",
                               "submit_recording(*rec_cur, false);", "begin_recording(rec_cur_value);", "part_work = 0;",

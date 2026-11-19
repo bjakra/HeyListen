@@ -104,6 +104,7 @@ void late_fix_wake(uint64_t v) { woken = std::max(woken, v); }
 uint64_t gpu_done = 0, waited_for = 0;
 void vk_timeline_wait_sent(uint64_t v) { waited_for = v; gpu_done = std::max(gpu_done, v); }
 uint64_t vk_timeline_completed() { return gpu_done; }
+uint64_t vk_rec_completed() { return 0; }   // (better-aa: no early write-backs in the model: every fix waits for its value)
 
 PARTS
 

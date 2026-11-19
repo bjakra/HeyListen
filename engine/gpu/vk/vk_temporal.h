@@ -64,6 +64,17 @@ bool temporal_scene_depth_is(const Texture* depth);
 bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                       VkImageView out_view, uint32_t out_level);
 
+/// (better-aa, RX_VK_TUNE's fsr_defer=1, a measurement) At the present, before its blit: the engine's evaluation and its copy
+/// into the picture that the frame's upscale left for here. The picture then shows the scene a frame late; nothing else changes
+void temporal_present_work(VkCommandBuffer cmd);
+
+/// (better-aa, the upscale cut: vk_replay.cpp upscale_go_on) Whether the last call on this thread drew the scene's upscale (the flag
+/// cleared), and the compute code key of the dispatch an engine last took the upscale of (vk_draw.cpp dispatch notes it), 0 when
+/// none did in the last two frames: the replay's dry pass stops there
+bool temporal_took_dispatch();
+void temporal_note_upscale_key(uint64_t code_key);
+uint64_t temporal_upscale_key();
+
 /// Once a frame (the game's present): after 120 frames without an upscale by an engine (off, or the upscale not taken) the
 /// engine's own state, the chain's images and deferred frees are let go, so their video memory comes back. Nothing to do
 /// costs one atomic load

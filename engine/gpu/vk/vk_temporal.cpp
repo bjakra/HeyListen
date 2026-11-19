@@ -159,6 +159,17 @@ struct State {
     scene_pass::Passes passes;                  // (better-aa: this frame's scene passes, and each one's camera)
     Camera pass_cam[scene_pass::kMax];
     uint64_t cam_used = 0;                      // (the frame whose camera an upscale took: no other pick that frame)
+    // (better-aa, RX_VK_TUNE's fsr_defer=1, a measurement: the engine's evaluation and the copy into the picture recorded at
+    // the present instead of at the upscale, temporal_present_work. Same GPU work, after the frame's own submission)
+    struct Deferred {
+        bool pending = false;
+        TemporalFrame f;
+        VkImageView out_view = VK_NULL_HANDLE;
+        uint32_t ow = 0, oh = 0;
+        bool native = false;
+        VkPipeline out_pipe = VK_NULL_HANDLE;
+        VkPipelineLayout out_layout = VK_NULL_HANDLE;
+    } deferred;
     // (the gameplay upscale's output, as last seen: the scene sizes the upscaler can take follow from it,
     // temporal_scene_size. Read on the game's draws without the lock)
     std::atomic<uint32_t> out_w{0}, out_h{0};
@@ -996,10 +1007,65 @@ void temporal_note_skinned_draw(const SkinnedDraw& k) {
     s.skins.push_back(std::move(d));
 }
 
+namespace {
+thread_local bool took_dispatch = false;
+std::atomic<uint64_t> upscale_key{0}, upscale_key_frame{0};
+} // namespace
+bool temporal_took_dispatch() {
+    const bool v = took_dispatch;
+    took_dispatch = false;
+    return v;
+}
+void temporal_note_upscale_key(uint64_t code_key) {
+    upscale_key.store(code_key, std::memory_order_relaxed);
+    upscale_key_frame.store(texture_frame_no(), std::memory_order_relaxed);
+}
+uint64_t temporal_upscale_key() {
+    const uint64_t k = upscale_key.load(std::memory_order_relaxed);
+    return k && texture_frame_no() - upscale_key_frame.load(std::memory_order_relaxed) <= 2 ? k : 0;
+}
+namespace {
+/// The engine's output into the picture's storage view (ow x oh)
+void out_pass(State& s, VkCommandBuffer cmd, VkImageView out_view, uint32_t ow, uint32_t oh, bool native, VkPipeline out_pipe,
+              VkPipelineLayout out_layout) {
+    const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
+    const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
+                                           {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+    w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[0].pImageInfo = &info[0];
+    w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w[1].pImageInfo = &info[1];
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out_pipe);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out_layout, 0, 2, w);
+    vkCmdPushConstants(cmd, out_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof opc, opc);
+    vkCmdDispatch(cmd, (ow + 7) / 8, (oh + 7) / 8, 1);
+}
+} // namespace
+
+void temporal_present_work(VkCommandBuffer cmd) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    if (!s.deferred.pending) return;
+    State::Deferred d = s.deferred;
+    s.deferred.pending = false;
+    if (!s.drawing) return;
+    full_barrier(cmd);
+    if (!s.drawing->evaluate(cmd, d.f)) return;
+    full_barrier(cmd);
+    out_pass(s, cmd, d.out_view, d.ow, d.oh, d.native, d.out_pipe, d.out_layout);
+    descriptors_disturbed();
+}
+
 bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                       VkImageView out_view, uint32_t out_level) {
     const int mode = temporal_mode();
     if (mode == ur::GAME) return false;
+    {   // (better-aa, RX_VK_RB_ORDER_LOG: vk_memory.cpp rb_hazard_locked)
+        static const bool order_log = getenv("RX_VK_RB_ORDER_LOG") && atoi(getenv("RX_VK_RB_ORDER_LOG")) != 0;
+        if (order_log && texture_frame_no() % 300 == 0)
+            logf("vk: rb-order frame %llu: the upscale (%016llx)", (unsigned long long)texture_frame_no(), (unsigned long long)key);
+    }
     State& s = st();
     std::lock_guard lk(s.mu);
     pick_pass(s, in);   // (better-aa: the frame's pass that is the picture's: s.cam)
@@ -1153,37 +1219,30 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         logf("vk: upscaler: the scene's camera: near %.3f, far %.1f, vertical field of view %.1f degrees", cam.near_z,
              cam.far_z, cam.fov_y * 57.29578f);
     }
-    if (!engine.e->evaluate(cmd, f)) {
+    s.deferred.pending = false;   // (one left from a frame with no present)
+    if (tune_int("fsr_defer", 0) != 0 && !fsr3fi::frames_wanted()) {
+        s.deferred = {true, f, out_view, ow, oh, native, out_pipe, out_layout};
+    } else if (!engine.e->evaluate(cmd, f)) {
         logf("vk: %s: its evaluation failed: the game's upscale from now on", engine.e->name);
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)
     }
-    full_barrier(cmd);
-    mv_dump::take(cmd, f, now, cam.current, previous, cam.projection);   // (better-aa: RX_VK_TUNE's mv_dump, nothing unless asked)
+    if (!s.deferred.pending) {
+        full_barrier(cmd);
+        mv_dump::take(cmd, f, now, cam.current, previous, cam.projection);   // (better-aa: RX_VK_TUNE's mv_dump, nothing unless asked)
     // (better-aa, from Longshot) AMD FSR 3.1's frame interpolation: this motion, the skinned draws' own in it, over the
     // camera's alone that its own inputs made at this dispatch (vk_fsr3_inputs.h take_motion). Nothing unless it is asked for
     // (RX_VK_TUNE's fg_chain_motion=0: the camera's alone, as its own inputs made it, for an A/B)
     if (motion && fsr3fi::frames_wanted() && tune_int("fg_chain_motion", 1) != 0)
         (void)fsr3_inputs::take_motion(cmd, f.motion.image, rw, rh);
-    {
-        const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
-        const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
-                                               {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
-        VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-        w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w[0].pImageInfo = &info[0];
-        w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        w[1].pImageInfo = &info[1];
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out_pipe);
-        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out_layout, 0, 2, w);
-        vkCmdPushConstants(cmd, out_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof opc, opc);
-        vkCmdDispatch(cmd, (ow + 7) / 8, (oh + 7) / 8, 1);
+        out_pass(s, cmd, out_view, ow, oh, native, out_pipe, out_layout);
     }
     s.last_frame = now;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
     // (for the status line, temporal_status: the jitter the engine was given, in render pixels)
     s.status_jitter[0] = f.jitter[0], s.status_jitter[1] = f.jitter[1], s.status_motion = motion;
     s.status_drawn++;
+    took_dispatch = true;   // (better-aa: the upscale cut, temporal_took_dispatch)
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);

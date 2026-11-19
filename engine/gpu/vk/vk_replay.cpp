@@ -51,6 +51,7 @@
 #include "segment_plan.h"   // (TICK-050: the parallel replay's segment count)
 #include "vk_jobs.h"
 #include "vk_shader.h"
+#include "vk_tune.h"   // (better-aa: RX_VK_TUNE's upscale_cut)
 #include "vk_state.h"
 #include "vk_texture.h"
 #include "vk_xfer.h"
@@ -371,6 +372,22 @@ void note_signal_sent(uint64_t v) {
     uint64_t cur = tl_signal_sent.load(std::memory_order_relaxed);
     while (v > cur && !tl_signal_sent.compare_exchange_weak(cur, v, std::memory_order_release, std::memory_order_relaxed)) {}
 }
+// (better-aa, early write-backs) the same for the recordings' timeline: a late fix may wait for a recording's number only once a
+// submit that signals it went to the queue (vk_memory.cpp take_capture), as for a value
+std::atomic<uint64_t> rec_signal_sent{0};
+void note_rec_sent(uint64_t q) {
+    uint64_t cur = rec_signal_sent.load(std::memory_order_relaxed);
+    while (q > cur && !rec_signal_sent.compare_exchange_weak(cur, q, std::memory_order_release, std::memory_order_relaxed)) {}
+}
+/// (better-aa) The recordings' timeline up to q, sent already (no flush made here); at most 8 x 250 ms, as the value's waits
+void rec_wait_sent(uint64_t q) {
+    if (!rec_timeline || vk_rec_completed() >= q) return;
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &rec_timeline;
+    wi.pValues = &q;
+    for (int i = 0; i < 8 && vkWaitSemaphores(dev.device, &wi, 250000000ull) == VK_TIMEOUT; i++) {}
+}
 int64_t st_lf_thread, st_lf_blocked, st_lf_held_cbs;   // (dev.present_mu: fixes applied by the fix thread, by a flush that waited)
 double st_lf_blocked_ms;
 std::atomic<int64_t> st_lf_wait_ns{0};   // (the frame trace's late_fix_ms: any thread's waits for a pending fix, the fix thread's not)
@@ -379,6 +396,15 @@ std::atomic<int64_t> st_lf_wait_ns{0};   // (the frame trace's late_fix_ms: any 
 void late_fix_flush_locked() {
     const uint64_t v = memory_late_fix_pending();
     if (!v) return;
+    if (const uint64_t q = memory_late_fix_seq(); completed() < v && q) {   // (better-aa: every fix reached by an early write-back)
+        const auto t0 = std::chrono::steady_clock::now();
+        rec_wait_sent(q);
+        const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        st_lf_blocked++, st_lf_blocked_ms += ns / 1e6;
+        st_lf_wait_ns.fetch_add(ns, std::memory_order_relaxed);
+        memory_late_fix_apply(completed());
+        if (!memory_late_fix_pending()) return;
+    }
     if (completed() < v) {
         const auto t0 = std::chrono::steady_clock::now();
         VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -415,7 +441,8 @@ bool late_fix_wait_unlocked() {
     for (uint64_t lv; (lv = memory_late_fix_pending()) && completed() < lv;) {
         if (tl_poll) return false;   // (a poll: what is held is not done anyway; the fix thread sends it)
         const auto t0 = std::chrono::steady_clock::now();
-        vk_timeline_wait_sent(lv);
+        if (const uint64_t q = memory_late_fix_seq()) rec_wait_sent(q);   // (better-aa: early write-backs)
+        else vk_timeline_wait_sent(lv);
         st_lf_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
                                 std::memory_order_relaxed);
         memory_late_fix_apply(completed());   // (TICK-060m: at once, as the fix thread: whichever wakes first copies)
@@ -447,6 +474,7 @@ void queue_flush_locked() {   // (dev.present_mu held)
     tl_ev("flush-submit", pend.cbs.size(), pend.signal, pend.rec);
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
     if (res == VK_SUCCESS && pend.any_signal) note_signal_sent(pend.signal);
+    if (res == VK_SUCCESS && pend.rec) note_rec_sent(pend.rec);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
@@ -481,7 +509,12 @@ void late_fix_main() {
         wi.pSemaphores = &timeline;
         wi.pValues = &v;
         tl_ev("fix-wait+", v);
-        vkWaitSemaphores(dev.device, &wi, 250000000ull);   // (a flush elsewhere may have applied it meanwhile)
+        if (uint64_t q = memory_late_fix_seq()) {   // (better-aa: every pending fix reached by an early write-back's recording)
+            wi.pSemaphores = &rec_timeline, wi.pValues = &q;
+            vkWaitSemaphores(dev.device, &wi, 250000000ull);
+        } else {
+            vkWaitSemaphores(dev.device, &wi, 250000000ull);   // (a flush elsewhere may have applied it meanwhile)
+        }
         tl_ev("fix-wait-", v);
         jt_mark(38, v);
         // (TICK-060m) the copies as soon as the value is reached, before the queue's lock (another thread's submit may hold it):
@@ -574,6 +607,12 @@ void wait_lost(const char* what, uint64_t v) {
 }
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
+uint64_t vk_rec_completed() {
+    uint64_t v = 0;
+    if (rec_timeline) vkGetSemaphoreCounterValue(dev.device, rec_timeline, &v);
+    return v;
+}
+uint64_t vk_rec_signal_sent() { return rec_signal_sent.load(std::memory_order_acquire); }
 uint64_t vk_timeline_reached() {
     uint64_t v = 0;
     if (timeline) vkGetSemaphoreCounterValue(dev.device, timeline, &v);
@@ -1098,6 +1137,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     probe_submit(seq, 1);
     r.submitted = res == VK_SUCCESS;
     if (r.submitted && signal_value) note_signal_sent(signal.value);
+    if (r.submitted && seq) note_rec_sent(seq);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: submit %llu failed (%d)", (unsigned long long)r.value, (int)res);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
@@ -1195,6 +1235,19 @@ uint32_t event_value_in(const EvMap& ev, uint64_t gpu) {   // (one the stream ne
 }
 thread_local bool suspend_ok = false;               // (a serial replay that stops at a wait not met: submit_job)
 thread_local const uint8_t* suspend_at = nullptr;   // (the wait it stopped at)
+// (better-aa, the upscale cut: upscale_go_on) where the dry pass stopped at the scene's upscale, the dispatch it is not to stop at
+// again (the one the replay goes on from), and whether this dry pass may stop there
+thread_local const uint8_t* upscale_stop_at = nullptr;
+thread_local const uint8_t* upscale_skip = nullptr;
+thread_local bool upscale_may_cut = false;
+std::atomic<int64_t> st_rb_early{0}, st_upscale_cuts{0}, st_upscale_refused{0}, st_upscale_seen{0}, st_upscale_parts{0};
+/// (better-aa) The dispatch a dry pass is at is the one an engine took the scene's upscale of lately (by its code key)
+bool upscale_cut_here(const NvnState& s) {
+    const uint64_t k = temporal_upscale_key();
+    if (!k || compute_code_key(s) != k) return false;
+    st_upscale_seen.fetch_add(1, std::memory_order_relaxed);
+    return tune_int("upscale_cut", 1) != 0;
+}
 uint64_t ts_anchor_ns = 0;   // (the last present's time: counter timestamps are scaled from it)
 
 /// A GPU-timeline write of guest memory (the stream's own writes: they reach memory in command order)
@@ -1564,7 +1617,7 @@ void log_stage_bind(uint32_t op, int stage) {
 
 void maybe_split(VkCommandBuffer& cmd);
 // (longshot #443) A part's end that waits for the next plain draw (maybe_split, split_part): see part_ends_before_draw
-void split_part(VkCommandBuffer& cmd);
+void split_part(VkCommandBuffer& cmd, bool early = false);
 bool part_end_wanted = false;
 bool occ_sync(VkCommandBuffer& cmd);
 // (TICK-056, RX_VK_PRESYNC_EARLY) the dry pass's draw-and-dispatch count at which the mirrors' pre-sync goes to a worker (0: none)
@@ -2305,6 +2358,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_DISPATCH: {
+            if (dry && upscale_may_cut && p != upscale_skip && s.render_enabled && upscale_cut_here(s)) {
+                upscale_stop_at = p;
+                return;
+            }
             const auto d = payload<nvn_p_dispatch>(a, avail);
             if (s.render_enabled && !dry) dispatch(cmd, s, (uint32_t)d.x, (uint32_t)d.y, (uint32_t)d.z, 0);
             break;
@@ -2458,7 +2515,7 @@ void maybe_split(VkCommandBuffer& cmd) {
 }
 
 /// The recording's part ends here and the submission goes on in a new one (maybe_split says when)
-void split_part(VkCommandBuffer& cmd) {
+void split_part(VkCommandBuffer& cmd, bool early) {
     part_end_wanted = false;
     // (asked for in another command buffer of the submission: what maybe_split refuses is refused here too, and it asks again at the
     // next draw it would cut after)
@@ -2479,9 +2536,11 @@ void split_part(VkCommandBuffer& cmd) {
         return e ? atoi(e) != 0 : dev.props.vendorID != 0x8086 || pools_mirrored();
     }();
     if (part_flush) flush_ub_updates(cmd);
+    if (early) memory_wb_early_collect();   // (better-aa: upscale_go_on)
     memory_end_submission(cmd);
     full_barrier(cmd, "barrier (recording end)");
     submit_recording(*rec_cur, false);
+    if (early) memory_wb_early_commit(rec_seq);   // (its number on the recordings' timeline: submit_recording, replay_mu held)
     if (part_flush) ub_first_of_recording = ub_updates.size();
     Recording& r = begin_recording(rec_cur_value);
     memory_begin_submission();
@@ -2789,6 +2848,7 @@ void presync_early_finish(bool segments) {
 /// (RX_VK_PARALLEL off, a small one, dumps and profiles), or its dry pass there and its segments on the threads.
 /// may_stop: up to a wait not met, which it returns (null: the command buffer done)
 const uint8_t* occ_go_on(VkCommandBuffer& cmd, const uint8_t* at, bool may_stop, Recording* last);
+const uint8_t* upscale_go_on(VkCommandBuffer& cmd, const uint8_t* at, bool may_stop);
 
 // ---- (TICK-056) RX_VK_SEG_EARLY=1: a big command buffer's segments handed out as the dry pass passes their boundaries ----
 // TICK-054's loop: the Presentation Thread's dry pass (~0.25-0.5 ms a big command buffer) ran before any segment started. Here
@@ -3020,7 +3080,9 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
     VkCommandBuffer none = cmd;
     suspend_ok = may_stop;
     jt_mark(13, 0);
+    upscale_may_cut = true;   // (better-aa: the upscale cut, as in replay_handle)
     replay(none, state, h);
+    upscale_may_cut = false;
     jt_mark(14, 0);
     if (egpu) texture_upload_watch(nullptr);
     suspend_ok = false;
@@ -3029,7 +3091,8 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
     early_wall.mark(5);
     ub_growing.store(false, std::memory_order_release);   // (nothing is appended from here on)
     const uint8_t* const occ_stop = suspend_at ? nullptr : occ_stop_at;
-    const uint8_t* const stop = suspend_at ? suspend_at : occ_stop;
+    const uint8_t* const ucut = suspend_at || occ_stop ? nullptr : upscale_stop_at;   // (better-aa: at the scene's upscale)
+    const uint8_t* const stop = suspend_at ? suspend_at : occ_stop ? occ_stop : ucut;
     const int64_t total = dry_work;
     *total_out = total;
     static double dry_ms, seg_ms, segs_n, slow_ms, wait_ms, self_ms, early_n;
@@ -3054,7 +3117,7 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
             record_segment(cmd, whole);
         }
         *cut = false;
-        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : stop;
+        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : ucut ? upscale_go_on(cmd, ucut, may_stop) : stop;
     }
     *cut = true;
     Job* last = jobs[open].get();
@@ -3148,7 +3211,7 @@ const uint8_t* replay_handle_early(VkCommandBuffer& cmd, const uint8_t* h, bool 
     rec_cur = &nr;
     cmd = nr.cmd;
     rec_parts += (int)used + 1;
-    return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, jobs[used - 1]->r) : stop;
+    return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, jobs[used - 1]->r) : ucut ? upscale_go_on(cmd, ucut, may_stop) : stop;
 }
 // (TICK-061) RX_VK_DRY_LEAN: see replay_handle
 bool dry_lean_on() {
@@ -3189,6 +3252,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     }
     // the dry pass: the state at every 64 draws and dispatches, the render conditions, the uniform updates
     occ_stop_at = nullptr;
+    upscale_stop_at = nullptr;
     const auto t_dry0 = std::chrono::steady_clock::now();
     const NvnState start = state;
     const size_t ub0 = ub_updates.size();
@@ -3301,7 +3365,9 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     VkCommandBuffer none = cmd;
     suspend_ok = may_stop;
     jt_mark(13, 0);
+    upscale_may_cut = true;
     replay(none, state, h);
+    upscale_may_cut = false;
     jt_mark(14, 0);
     if (lean_points) {
         lean_points = nullptr;
@@ -3315,7 +3381,8 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     suspend_ok = false;
     rmode = Mode::Serial;
     const uint8_t* const occ_stop = suspend_at ? nullptr : occ_stop_at;   // (TICK-033: stopped for a report's count)
-    const uint8_t* const stop = suspend_at ? suspend_at : occ_stop;     // (the segments end there)
+    const uint8_t* const ucut = suspend_at || occ_stop ? nullptr : upscale_stop_at;   // (better-aa: at the scene's upscale)
+    const uint8_t* const stop = suspend_at ? suspend_at : occ_stop ? occ_stop : ucut;     // (the segments end there)
     const int64_t total = dry_work;
     pk_total[pk_this] = total;
     static double dry_ms, seg_ms, segs_n;
@@ -3363,7 +3430,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
             rwall.whole++;
             record_segment(cmd, seg[0]);
         }
-        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : stop;
+        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : ucut ? upscale_go_on(cmd, ucut, may_stop) : stop;
     }
     if (!par_pool.started) {
         par_pool.started = true;
@@ -3461,7 +3528,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
             rwall.whole++;
             record_segment(cmd, whole);
         }
-        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : stop;
+        return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, nullptr) : ucut ? upscale_go_on(cmd, ucut, may_stop) : stop;
     }
     texture_segments_begin(inits.data(), inits.size());
     const auto t_seg0 = std::chrono::steady_clock::now();
@@ -3635,7 +3702,26 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rec_cur = &nr;
     cmd = nr.cmd;
     rec_parts += (int)seg.size() + 1;
-    return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, jobs.back()->r) : stop;
+    return occ_stop ? occ_go_on(cmd, occ_stop, may_stop, jobs.back()->r) : ucut ? upscale_go_on(cmd, ucut, may_stop) : stop;
+}
+
+/// (better-aa, the upscale cut) A dry pass stopped at the scene's upscale (upscale_cut_here): what came before is recorded, its part
+/// ended there with the submission's write-backs so far and sent with its own number on the recordings' timeline (split_part), and
+/// the command buffer replayed on from the upscale in a new part. Every GPU write the game reads back comes before the upscale
+/// (RX_VK_RB_ORDER_LOG, Kokiri Forest): the game's readbacks and the next capture's late pages wait for that part
+/// (vk_memory.cpp wb_early) instead of the end of the submission, so the engine's work (AMD FSR 4 INT8: ~3.8 ms on an RX 6800) and
+/// what follows it run while the game goes on with its next frame. RX_VK_TUNE's upscale_cut=0: off (one part, as before)
+const uint8_t* upscale_go_on(VkCommandBuffer& cmd, const uint8_t* at, bool may_stop) {
+    if (rec_cur && rec_parts + 1 < kMaxParts && !dump_on()) {
+        split_part(cmd, true);
+        st_upscale_cuts.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        st_upscale_refused.fetch_add(1, std::memory_order_relaxed), st_upscale_parts.store(rec_parts, std::memory_order_relaxed);
+    }
+    upscale_skip = at;
+    const uint8_t* const r = replay_handle(cmd, at, may_stop);
+    upscale_skip = nullptr;
+    return r;
 }
 
 /// (TICK-033, RX_VK_OCC_REAL=4) a dry pass stopped at a condition on a report not read yet: what it covered is recorded (and
@@ -4716,7 +4802,19 @@ void invalidate(uint64_t gpu, uint64_t size) {
             const bool late = pend && readback_late_wanted(size, v >= f0);
             if (pend) rbs.pending = true, rbs.newest = v >= f0, rbs.late = late;
             rbs.skip();
-            if (pend && !late) {
+            // (better-aa: every page of it written back by the part before the upscale: that part's recording waited for, not the
+            // submission's end, the engine's work and what follows it. The light meter's strict wait is that one too)
+            const uint64_t early = pend && !late ? memory_writeback_early(host->gpu_guest(gpu), size) : 0;
+            if (early) {
+                if (vk_rec_completed() < early) {
+                    queue_flush_for(FR_WAIT);
+                    rec_wait_sent(early);
+                }
+                (void)completed();
+                st_rb_early.fetch_add(1, std::memory_order_relaxed);
+                rbs.mark(2);
+                w = true;
+            } else if (pend && !late) {
                 int ok = 0;
                 if (!(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
                     rbs.mark(2);
@@ -4749,8 +4847,11 @@ void invalidate(uint64_t gpu, uint64_t size) {
             }
             if (++calls % 3000 == 0) {
                 const int64_t n = waited.exchange(0);
-                logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each", (long long)n,
-                     n ? ns.exchange(0) / (double)n / 1e6 : 0.0);
+                logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each; %lld of them for the part "
+                     "before the upscale (upscale cuts so far %lld; dispatches seen %lld, refused %lld at %lld parts; upscale key %016llx)", (long long)n,
+                     n ? ns.exchange(0) / (double)n / 1e6 : 0.0, (long long)st_rb_early.exchange(0), (long long)st_upscale_cuts.load(),
+                     (long long)st_upscale_seen.load(), (long long)st_upscale_refused.load(), (long long)st_upscale_parts.load(),
+                     (unsigned long long)temporal_upscale_key());
             }
         }
     }
@@ -6140,6 +6241,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         blit_ts_mark();   // (the recordings' timeline: which recording ends before this blit, which starts after)
     }
     full_barrier(f.cmd);   // (after the game's work for the frame: earlier submits on this queue)
+    temporal_present_work(f.cmd);   // (better-aa: RX_VK_TUNE's fsr_defer, a measurement)
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const PresentAspect aspect{src && host && host->aspect_ratio ? host->aspect_ratio() : 0.0f};
     const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, aspect);

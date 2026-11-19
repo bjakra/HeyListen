@@ -68,6 +68,7 @@ bool memory_table_flush() { return false; }
 void memory_protect_gpu(uint64_t, uint64_t) {}
 void diff_gpu_wrote(uint64_t, uint64_t) {}   // (TICK-048: the chunk diff's GPU-write note; off in the model)
 void late_shadow_void_range(uint64_t, uint64_t) {}   // (TICK-053: the late-merge shadows' void; RX_VK_LATE_MERGE is off by default, so no shadows)
+uint64_t texture_frame_no() { return 1; }   // (better-aa: RX_VK_RB_ORDER_LOG's frame number; the log is off in the model)
 bool slow_desc_timing() { return false; }
 constexpr uint16_t kUseStorage = 8;   // (vk_ledger.h, RX_VK_LEDGER: off in the model)
 struct LedgerUse { explicit LedgerUse(uint16_t) {} };

@@ -37,9 +37,23 @@ back end without a rebuild.
   0-4 px), which tore the ceiling's roots apart in every frame FSR 3.1 made and fed FSR 4 / DLSS bad history. Every pass of
   the frame is kept now and the depth the game switched to last for the upscale's input is used (`scene_pass.h`):
   measured against block matching of the frames themselves, 1.2 px median, 4.1 px at the 90th percentile.
+- **The upscaler off the game's wait (+19% with FSR 4 on an RX 6800).** Every frame the game reads back GPU results (the
+  light meter's sums and a few small buffers) and waits for them, and that wait used to last to the end of the frame's whole
+  submission: the GPU work after the upscale too, AMD FSR 4's INT8 network (~3.8 ms on an RX 6800) and the post and HUD
+  passes. Every GPU write the game reads back is made before the upscale (`RX_VK_RB_ORDER_LOG=1` with `RX_VK_PARALLEL=0`
+  logs them in recording order against the upscale's place), so the replay now ends a part of the recording right before
+  the upscale's dispatch, with the write-backs made so far and a number of its own on the recordings' timeline
+  (`vk_replay.cpp upscale_go_on`). The game's readbacks and the next capture's late pages wait for that part when every
+  page they need was written back by it (`vk_memory.cpp wb_early`), else for the submission's end as before. The GPU then
+  runs the upscale while the game's CPU goes on with its next frame. Kokiri Forest, 1440p, FSR 4 at 50%, no frame
+  generation, the same save, alternated live three times: 46.6 -> 55.3 fps; a readback's wait 4.6 -> 0.24 ms; the picture
+  the same, and no light-meter pulses (80 frames each: the largest frame-to-frame change of the scene's mean brightness
+  0.64 of 255 against 0.75 without). `RX_VK_TUNE`'s `upscale_cut=0` turns it off; `fsr_defer=1` was the measurement that
+  bounded it (the engine's work moved to the present: the gain without the cut, the picture wrong).
 - **Live switches for tests** (`vk_tune.h`): `RX_VK_TUNE=<file>` of `key=value` lines, read again while the game runs:
   frame generation's passes (`fsr_fg`, `fg_hud_copy`, `fg_keep_static`, `fg_chain_motion`, `fg_debug`), the motion view
-  (`debug_motion`), the scene pass rule (`cam_pass`, `cam_depth_id`) and logs (`cam_log`, `pass_log`), and `mv_dump=<n>`,
+  (`debug_motion`), the scene pass rule (`cam_pass`, `cam_depth_id`) and logs (`cam_log`, `pass_log`), the upscale cut
+  (`upscale_cut`, `fsr_defer`), and `mv_dump=<n>`,
   which writes the next n frames' colour, depth, motion and camera to `RX_VK_MV_DUMP_DIR` for an offline check.
 
 ## Not possible here

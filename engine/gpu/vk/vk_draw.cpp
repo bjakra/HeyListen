@@ -9556,7 +9556,9 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                                   cp->stages[0].info.uses_cooperative_matrix, gameplay_network(cp->key)) ||
                                (force_stub && cp->stages[0].info.uses_cooperative_matrix &&
                                 (force_stub >= 2 || !gameplay_network(cp->key))));
+    (void)temporal_took_dispatch();
     if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) {
+        if (temporal_took_dispatch()) temporal_note_upscale_key(compute_code_key(s));   // (better-aa: the upscale cut)
         // (better-aa: a gameplay upscale's picture, as the dispatch below copies its own: frame generation's HUD mark)
         if (stub_picture && fsr3fi::frames_wanted()) framegen_hud_before(cmd, stub_picture, 0);
         return void(st_dispatches++);
@@ -9779,7 +9781,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     uint32_t picture_level = 0;
     Texture* const picture = upscale_picture(s, p, &picture_level);
     if (fsr3_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
-    if (temporal_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
+    if (temporal_stand_in(cmd, s, p)) {
+        if (temporal_took_dispatch()) temporal_note_upscale_key(compute_code_key(s));   // (better-aa: the upscale cut)
+        return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
+    }
     if (taau_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
     const VkPipeline pipe = cpipe();
     if (!pipe) SKIP_HERE();

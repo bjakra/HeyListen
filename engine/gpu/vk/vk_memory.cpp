@@ -945,6 +945,7 @@ struct Capture {
     std::vector<uint32_t> deferred;   // (TICK-017: pages left to the GPU's copy from guest memory, capture_make)
     std::vector<uint32_t> late;      // (indices into pages: copied again by the replay once late_value is done)
     uint64_t late_value = 0;
+    uint64_t late_seq = 0;           // (better-aa: or once this recording number is done: every late page's early write-back's)
     // (TICK-060, RX_VK_CAPTURE_HASH) the chunk hashes of each slot's bytes, made by the copy itself (16 a slot), and which slots have
     // them (0: none, the mirror sync hashes the slot as before)
     std::vector<uint64_t> hashes;
@@ -1852,14 +1853,63 @@ struct WbPages {
     }
     bool empty() const { return !any; }
 } wb_pages;
+// (better-aa, early write-backs) The write-backs of a part ended before the scene's upscale (vk_replay.cpp upscale_cut): every
+// GPU write the game reads back is made before it (RX_VK_RB_ORDER_LOG), so they are written back at that part's end, and the part's
+// number on the recordings' timeline says when they have landed. By page: the submission value the page was written back with
+// and that number. A later write-back of the page (the rest of the submission, or another) takes its entry away: then the page
+// waits for its value as before. wb_pages_mu
+std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> wb_early;
+bool wb_early_collecting = false;
+std::vector<std::pair<uint64_t, uint64_t>> wb_early_ranges;   // (guest lo, hi of the collecting part's write-backs)
+uint64_t wb_early_value = 0;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
     static const bool off = getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
     if (guest_hi > guest_lo) trace_gpu(MKWVK_TRACE_WRITEBACK, guest_lo, guest_hi - guest_lo, 0, value);
     if (off || !value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
     for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set(p, value);
+    if (wb_early_collecting) {
+        wb_early_ranges.push_back({guest_lo, guest_hi}), wb_early_value = value;
+    } else if (!wb_early.empty()) {
+        for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_early.erase((uint32_t)p);
+    }
 }
 } // namespace
+void memory_wb_early_collect() {
+    if (pool_mirror_on()) return;   // (RX_VK_POOL_MIRROR: write-backs staged, landing in guest memory at completed(): not early)
+    std::lock_guard lk(wb_pages_mu);
+    wb_early_collecting = true, wb_early_ranges.clear(), wb_early_value = 0;
+}
+void memory_wb_early_commit(uint64_t seq) {
+    std::lock_guard lk(wb_pages_mu);
+    wb_early_collecting = false;
+    if (seq && wb_early_value)
+        for (const auto& [lo, hi] : wb_early_ranges)
+            for (uint64_t p = lo >> kPageShift; p <= (hi - 1) >> kPageShift; p++) wb_early[(uint32_t)p] = {wb_early_value, seq};
+    wb_early_ranges.clear();
+    if (wb_early.size() > 65536) wb_early.clear();   // (old entries: their values done long ago, never asked again)
+}
+namespace {
+/// (wb_pages_mu) the recordings' number page p's write-back of value pv lands with, 0: none known (wait for pv)
+uint64_t wb_early_seq_locked(uint32_t p, uint64_t pv) {
+    const auto it = wb_early.find(p);
+    return it != wb_early.end() && it->second.first == pv ? it->second.second : 0;
+}
+} // namespace
+uint64_t memory_writeback_early(uint64_t guest, uint64_t size) {
+    if (!size) return 0;
+    std::lock_guard lk(wb_pages_mu);
+    if (wb_early.empty()) return 0;
+    uint64_t seq = 0;
+    for (uint64_t p = guest >> kPageShift; p <= (guest + size - 1) >> kPageShift; p++) {
+        const uint64_t pv = wb_pages.get((uint32_t)p);
+        if (!pv) continue;
+        const uint64_t q = wb_early_seq_locked((uint32_t)p, pv);
+        if (!q) return 0;
+        seq = std::max(seq, q);
+    }
+    return seq;
+}
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
     uint64_t v = 0;
     if (ever) *ever = false;
@@ -2637,7 +2687,7 @@ std::unique_ptr<Capture> capture_make() {
         if (!spare.empty()) c = std::move(spare.back()), spare.pop_back();
     }
     if (!c) c = std::make_unique<Capture>();
-    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->deferred.clear(), c->late.clear(), c->late_value = 0;
+    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->deferred.clear(), c->late.clear(), c->late_value = 0, c->late_seq = 0;
     c->hok.clear();   // (TICK-060: no slot hashes unless the copy below makes them)
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     // (only the pools mirrored in VRAM, the ones the mirrors are filled from, and only their part of the write marks:
@@ -2722,13 +2772,21 @@ std::unique_ptr<Capture> capture_make() {
         static const int cap_wait = getenv("RX_VK_CAPTURE_WAIT") ? atoi(getenv("RX_VK_CAPTURE_WAIT")) : 2;
         static const bool defer = getenv("RX_VK_CAPTURE_DEFER") && atoi(getenv("RX_VK_CAPTURE_DEFER")) != 0;   // (off: see TICK-017)
         uint64_t v = 0;
+        // (better-aa: a page whose early write-back has landed is not late; the late ones' number, when every one has one)
+        bool all_early = true;
+        uint64_t lseq = 0;
         if (cap_wait) {
             const uint64_t done = vk_timeline_completed();
+            const uint64_t rdone = vk_rec_completed(), rsent = vk_rec_signal_sent();
             std::lock_guard lk(wb_pages_mu);
             if (!wb_pages.empty())
                 for (int64_t i = 0; i < n; i++) {
                     const uint64_t pv = wb_pages.get(pages[i]);
                     if (pv > done) {
+                        const uint64_t q = wb_early.empty() ? 0 : wb_early_seq_locked(pages[i], pv);
+                        if (q && q <= rdone) continue;
+                        if (q && q <= rsent) lseq = std::max(lseq, q);
+                        else all_early = false;
                         v = std::max(v, pv);
                         if (defer) deferred.push_back(pages[i]);
                         else if (cap_wait == 2) c->late.push_back((uint32_t)i);
@@ -2738,7 +2796,7 @@ std::unique_ptr<Capture> capture_make() {
         static const uint64_t slack = getenv("RX_VK_CAPTURE_SLACK") ? atoll(getenv("RX_VK_CAPTURE_SLACK")) : 2;
         if (v && defer) {
             if (v > slack) vk_timeline_wait(v - slack);   // (pacing only: see TICK-017 in docs/perf-audit.md)
-        } else if (v && cap_wait == 2) c->late_value = v;
+        } else if (v && cap_wait == 2) c->late_value = v, c->late_seq = all_early ? lseq : 0;
         else if (v) vk_timeline_wait(v);
     }
     if (n > 0) shadow_written(pages, n);
@@ -3155,6 +3213,7 @@ bool late_defer_on() {   // (TICK-060: on by default after the PC 3050 confirm; 
 }
 struct LateFix {
     uint64_t value = 0;                                  // (the late pages' write-back: their slots copied again once it is done)
+    uint64_t seq = 0;                                    // (better-aa: or once this recording number is done: early write-backs)
     uint32_t gen = 0;                                    // (the capture's generation: its slots in the capture table)
     uint8_t* map = nullptr;                              // (the capture's buffer, kept in cap_bufs until its submission is done)
     VmaAllocation alloc = nullptr;
@@ -3187,6 +3246,18 @@ bool late_fix_slot_pending(uint32_t gen, uint32_t slot, uint64_t* value) {
 }
 std::atomic<int64_t> st_late_deferred{0}, st_late_def_pages{0}, st_late_def_tex{0}, st_late_def_unsent{0};
 uint64_t memory_late_fix_pending() { return late_fix_top.load(std::memory_order_acquire); }
+/// (better-aa) The recordings' number every pending fix is reached by (the highest of their early numbers), 0: some fix has none
+/// (its value is waited for, as before) or none is pending
+uint64_t memory_late_fix_seq() {
+    if (!late_fix_top.load(std::memory_order_acquire)) return 0;
+    std::lock_guard lk(late_fix_mu);
+    uint64_t q = 0;
+    for (const LateFix& f : late_fixes) {
+        if (!f.seq) return 0;
+        q = std::max(q, f.seq);
+    }
+    return q;
+}
 size_t late_fix_count() {
     std::lock_guard lk(late_fix_mu);
     return late_fixes.size();
@@ -3204,9 +3275,10 @@ void memory_late_fix_apply(uint64_t done) {
     if (late_fixes.empty()) return;
     uint8_t* const base = (uint8_t*)host->guest_base();
     uint64_t top = 0;
+    const uint64_t rdone = vk_rec_completed();   // (better-aa: a fix with an early number is reached by it too)
     for (auto it = late_fixes.begin(); it != late_fixes.end();) {
         LateFix& f = *it;
-        if (f.value > done) {
+        if (f.value > done && !(f.seq && f.seq <= rdone)) {
             top = std::max(top, f.value);
             ++it;
             continue;
@@ -3388,7 +3460,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 }
             }
             if (tex) st_late_def_tex.fetch_add(1, std::memory_order_relaxed);
-            else if (c->late_value > vk_timeline_signal_sent()) st_late_def_unsent.fetch_add(1, std::memory_order_relaxed);
+            else if (c->late_value > vk_timeline_signal_sent() && !c->late_seq) st_late_def_unsent.fetch_add(1, std::memory_order_relaxed);
             else if (late_fix_count() >= kLateFixMax) st_late_def_full.fetch_add(1, std::memory_order_relaxed);
             else late_defer = true, gpu_tail_note_late(c->late_value);   // (TICK-057's tail: the value the queue now waits for)
         }
@@ -3575,7 +3647,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         st_tk_entries += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - te0).count();
         if (late_defer) {   // (TICK-060: the late slots copied again once their write-back is done, before anything reads them)
             LateFix f;
-            f.value = c->late_value, f.gen = g, f.map = (uint8_t*)b.map, f.alloc = b.alloc, f.nbytes = c->nbytes;
+            f.value = c->late_value, f.seq = c->late_seq, f.gen = g, f.map = (uint8_t*)b.map, f.alloc = b.alloc, f.nbytes = c->nbytes;
             for (uint32_t i : c->late) f.slots.push_back({i, c->pages[i]});
             static int logged;
             for (uint32_t i : c->late)
@@ -5261,7 +5333,20 @@ uint64_t rb_hazards_epoch = 0;
 struct RbSegments {
     uint64_t epoch = 0, base = 0, n = 0, made = 0;
 } rb_segs;
+// (better-aa, RX_VK_RB_ORDER_LOG=1 with RX_VK_PARALLEL=0, a diagnostic: every 300th frame, the GPU writes into pages the CPU reads
+// back, in recording order, against the upscale's place (vk_temporal.cpp): whether the readbacks come before the upscale)
+bool rb_order_log() {
+    static const bool v = getenv("RX_VK_RB_ORDER_LOG") && atoi(getenv("RX_VK_RB_ORDER_LOG")) != 0;
+    return v;
+}
 void rb_hazard_locked(uint64_t lo, uint64_t hi) {   // (pools_mu held)
+    if (rb_order_log() && texture_frame_no() % 300 == 0 && hi > lo)
+        for (uint64_t pg = lo >> kPageShift; pg <= (hi - 1) >> kPageShift; pg++)
+            if (rb_pages.count((uint32_t)pg)) {
+                logf("vk: rb-order frame %llu: a GPU write into a readback page %#llx +%#llx", (unsigned long long)texture_frame_no(),
+                     (unsigned long long)lo, (unsigned long long)(hi - lo));
+                break;
+            }
     if (rb_hazards_epoch != mirror_epoch) rb_hazards.clear(), rb_hazards_epoch = mirror_epoch;
     rb_hazards.push_back({lo, hi, texture_segment()});
 }
