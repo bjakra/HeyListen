@@ -59,6 +59,15 @@ back end without a rebuild.
   the P-cores as well was 1.5 fps worse. i5-12600KF, Kokiri, 1440p, the same save, two restarts each: 50.0 -> 53.7 fps,
   the slowest 5 s 48.8 -> 53.0. `RX_VK_PCORE_PIN=0` turns it off; a CPU without `cpu_core` (AMD, older Intel) is left
   as it was.
+- **The uniform-update list read without a lock (+2.8%).** While the planning (dry) pass still runs, early segments
+  are already recorded on the workers, and they read the frame's uniform-buffer updates and render-condition results
+  the pass is still appending. Those lists were a `std::deque` / `std::vector`, whose index may move on an append, so
+  every append took a lock exclusively and every read took it shared. perf's sleep stacks of the replay threads showed
+  the workers sleeping ~800 times a frame in `ub_read` / `ub_overlay` and the planning pass ~210 times waiting to
+  append, on the frame's critical path. Both are now a `StableSeq` (`vk_replay.cpp`): blocks that never move, reached
+  through a fixed table; an append writes only new places and publishes its count last, so a worker reads the entries
+  it was handed with no lock. Kokiri, 1440p, two restarts each: 53.4 -> 54.9 fps, the picture the same.
+  `RX_VK_UB_LOCK=1` brings the lock back for an A/B.
 - **Recompiler changes, exact but not faster here.** Tested and kept, but they measured inside the noise on this PC
   (the old binary 51.5, the new 51.8 fps, three restarts each), because the game's code is not on the frame's critical
   path here:

@@ -41,7 +41,18 @@ def main():
     need('getenv("RX_VK_SEG_EARLY") && atoi(getenv("RX_VK_SEG_EARLY")) != 0' in on, "RX_VK_SEG_EARLY is not off by default")
 
     rg = function(rp, "struct UbReadGuard")
-    need("rmode == Mode::Worker && ub_growing.load(std::memory_order_acquire)" in rg, "a read guard locks outside a worker or growth")
+    need("rmode == Mode::Worker && ub_lock_on() && ub_growing.load(std::memory_order_acquire)" in rg,
+         "a read guard locks outside a worker or growth, or without RX_VK_UB_LOCK")
+    # (better-aa) the lists are StableSeq: an append moves nothing a worker reads, so the guards lock only for an A/B
+    need("StableSeq<UbUpdate> ub_updates;" in rp, "ub_updates is not a StableSeq (its appends may move what workers read)")
+    need("StableSeq<uint8_t, 4096, 1024> par_conds;" in rp, "par_conds is not a StableSeq")
+    seq = function(rp, "class StableSeq")
+    i = seq.index("void push_back(T v)")
+    push = seq[i:seq.index("void pop_front()")]
+    need(push.index("b[pos % kBlock] = std::move(v);") < push.index("tail_.store(pos + 1, std::memory_order_release);"),
+         "an append publishes its entry before writing it")
+    need('getenv("RX_VK_UB_LOCK") && atoi(getenv("RX_VK_UB_LOCK")) != 0' in function(rp, "bool ub_lock_on()"),
+         "the old lock is not off by default")
     need("ub_read_depth++ == 0" in rg, "a nested read takes the shared lock again")
     need("std::unique_lock<std::shared_mutex>(ub_grow_mu)" in function(rp, "struct UbGrowGuard"), "the growth guard is not exclusive")
     need("UbReadGuard ug;" in function(rp, "uint64_t ub_overlay("), "ub_overlay reads the list unguarded")

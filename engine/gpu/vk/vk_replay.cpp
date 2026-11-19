@@ -32,6 +32,7 @@
 #include <map>
 #include <set>
 #include <shared_mutex>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1266,13 +1267,71 @@ void gpu_write(VkCommandBuffer cmd, uint64_t gpu, const void* data, uint64_t n) 
     }
 }
 
+// (better-aa) An append-only sequence whose elements never move and whose index never reallocates: blocks of kBlock
+// elements reached through a fixed table of kBlocks block pointers by absolute position (a ring: taken modulo; a block is
+// kept for reuse when the front passes it). The dry pass appends to ub_updates and par_conds while early segments' workers
+// read entries appended before theirs was handed out (RX_VK_SEG_EARLY). With a std::deque / std::vector the containers'
+// own index could move under a reader, so every append took ub_grow_mu exclusively and every read shared: in Kokiri the
+// workers slept ~800 times a frame on it (ub_read, ub_overlay) and the dry pass ~210 times waiting to append (perf, its
+// context switches' stacks), on the frame's critical path. Here a reader of an entry it was handed needs no lock: the
+// entry and the block pointer were written before the hand-off (the job queue's mutex), and an append writes only new
+// places. pop_front / resize / clear as before only while no worker reads (as with the deque).
+template <class T, size_t kBlock = 256, size_t kBlocks = 16384>
+class StableSeq {
+public:
+    StableSeq() : table_(new std::unique_ptr<T[]>[kBlocks]) {}
+    size_t size() const { return tail_.load(std::memory_order_acquire) - head_; }
+    bool empty() const { return size() == 0; }
+    T& operator[](size_t i) { return at(head_ + i); }
+    const T& operator[](size_t i) const { return at(head_ + i); }
+    T& front() { return at(head_); }
+    const T& front() const { return at(head_); }
+    void push_back(T v) {
+        const size_t pos = tail_.load(std::memory_order_relaxed);
+        if (pos - head_ >= kBlock * (kBlocks - 1)) {
+            logf("vk: StableSeq full (%zu entries live): stopping", pos - head_);
+            abort();
+        }
+        std::unique_ptr<T[]>& b = table_[(pos / kBlock) % kBlocks];
+        if (!b) b.reset(new T[kBlock]);
+        b[pos % kBlock] = std::move(v);
+        tail_.store(pos + 1, std::memory_order_release);
+    }
+    void pop_front() { at(head_) = T(), head_++; }
+    void resize(size_t n) {   // (shrinking only: the newest dropped)
+        size_t t = tail_.load(std::memory_order_relaxed);
+        while (head_ + n < t) at(--t) = T();
+        tail_.store(t, std::memory_order_release);
+    }
+    void clear() { resize(0); }
+    struct It {
+        const StableSeq* q;
+        size_t i;
+        const T& operator*() const { return (*q)[i]; }
+        It& operator++() { return ++i, *this; }
+        bool operator!=(const It& o) const { return i != o.i; }
+    };
+    It begin() const { return {this, 0}; }
+    It end() const { return {this, size()}; }
+
+private:
+    T& at(size_t pos) const { return table_[(pos / kBlock) % kBlocks][pos % kBlock]; }
+    std::unique_ptr<std::unique_ptr<T[]>[]> table_;
+    size_t head_ = 0;
+    std::atomic<size_t> tail_{0};
+};
+bool ub_lock_on() {   // (RX_VK_UB_LOCK=1: ub_grow_mu as before, for an A/B)
+    static const bool on = getenv("RX_VK_UB_LOCK") && atoi(getenv("RX_VK_UB_LOCK")) != 0;
+    return on;
+}
+
 // ---- uniform updates (UPDATE_UB): written at the end of their recording; ub_overlay applies them to copies ----
 struct UbUpdate {
     uint64_t value;   // the submission that writes it
     uint64_t dst;
     std::vector<uint8_t> bytes;
 };
-std::deque<UbUpdate> ub_updates;   // in stream order, oldest first
+StableSeq<UbUpdate> ub_updates;   // in stream order, oldest first (better-aa: StableSeq, read without a lock)
 std::atomic<uint64_t> ub_list_epoch{1};   // (bumped when that deque gains or loses an update)
 thread_local uint64_t ub_gen = 0;   // (each recording thread's: its draws' overlays change with what it passed)
 
@@ -1286,7 +1345,7 @@ enum class Mode { Serial, Dry, Worker };
 thread_local Mode rmode = Mode::Serial;
 thread_local size_t ub_limit = SIZE_MAX;   // (a worker: the uniform updates before its place in the stream)
 thread_local size_t cond_at = 0;           // (a worker: the next render condition's result)
-std::vector<uint8_t> par_conds;            // (the render conditions' results, in stream order: the dry pass's)
+StableSeq<uint8_t, 4096, 1024> par_conds;   // (the render conditions' results, in stream order: the dry pass's; StableSeq)
 struct ParPoint {
     const uint8_t* p;
     NvnState s;
@@ -1335,7 +1394,7 @@ thread_local int ub_read_depth = 0;   // (a read inside a read holds the lock on
 struct UbReadGuard {
     std::shared_lock<std::shared_mutex> lk;
     UbReadGuard() {
-        if (ub_read_depth++ == 0 && rmode == Mode::Worker && ub_growing.load(std::memory_order_acquire))
+        if (ub_read_depth++ == 0 && rmode == Mode::Worker && ub_lock_on() && ub_growing.load(std::memory_order_acquire))
             lk = std::shared_lock<std::shared_mutex>(ub_grow_mu);
     }
     ~UbReadGuard() { ub_read_depth--; }
@@ -1345,7 +1404,7 @@ struct UbReadGuard {
 struct UbGrowGuard {
     std::unique_lock<std::shared_mutex> lk;
     UbGrowGuard() {
-        if (ub_growing.load(std::memory_order_relaxed)) lk = std::unique_lock<std::shared_mutex>(ub_grow_mu);
+        if (ub_lock_on() && ub_growing.load(std::memory_order_relaxed)) lk = std::unique_lock<std::shared_mutex>(ub_grow_mu);
     }
 };
 // (the dry pass calls on_point at each point it keeps while an early replay_handle runs; the replay thread's only)
