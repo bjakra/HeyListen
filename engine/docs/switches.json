@@ -2,7 +2,7 @@
  "schema": 1,
  "generated_by": "engine/scripts/list_switches.py",
  "scope": "C, C++ and headers under engine/ (engine/tests and vendored trees other than a64-kit excluded) and the Python the builder, the lifter and the scripts run: getenv, std::getenv, _wgetenv, the code's own env helpers and table-driven reads, and os.environ.",
- "count": 1328,
+ "count": 1329,
  "switches": [
   {
    "name": "A64_DEVIRT",
@@ -7976,6 +7976,27 @@
    "use": "Text is too slow or too fast for one run: `0` to `3`."
   },
   {
+   "name": "HOS_TEX_COMPACT_MS",
+   "area": "memory",
+   "group": "Textures, uploads and write-backs",
+   "audience": "developer",
+   "files": [
+    {
+     "path": "host/oot_tex_compact.c",
+     "line": 26
+    }
+   ],
+   "default": "off (unset)",
+   "values": "on or off (0, false, off, no and empty are off)",
+   "explanation": "(Better-aa, from Longshot 7b229f66, GPL-3.0) The texture data heap's compaction asked for once in a while: the lifted f_80797240 calls hos_oot_tex_compact_due where the game asks for a round (nx2/oot_patches.py patch_tex_compact); host/oot_tex_compact.h has why and the rule. HOS_TEX_COMPACT_MS=<ms>: at least that long between two rounds (1000 with no switch); 0: at every frame, as the game has it; off: never.",
+   "comment": "(Better-aa, from Longshot 7b229f66, GPL-3.0) The texture data heap's compaction asked for once in a while: the lifted f_80797240 calls hos_oot_tex_compact_due where the game asks for a round (nx2/oot_patches.py patch_tex_compact); host/oot_tex_compact.h has why and the rule. HOS_TEX_COMPACT_MS=<ms>: at least that long between two rounds (1000 with no switch); 0: at every frame, as the game has it; off: never.",
+   "documented_in": null,
+   "source": "comment at host/oot_tex_compact.c",
+   "documented": true,
+   "set_via": "In `hookshot_env.txt`, or in the environment.",
+   "use": null
+  },
+  {
    "name": "HOS_THP",
    "area": "host",
    "group": "System and services",
@@ -8925,12 +8946,12 @@
    "files": [
     {
      "path": "nx2/oot_patches.py",
-     "line": 334
+     "line": 368
     }
    ],
    "default": "unset",
    "values": "text",
-   "explanation": "undocumented: nx2/oot_patches.py:334 reads it as a text value: `job_order = os.environ.get(\"OOT_JOB_ORDER\") == \"1\" # (TICK-047, lift time; off: no job order statements)`. No comment in the source says what it changes.",
+   "explanation": "undocumented: nx2/oot_patches.py:368 reads it as a text value: `job_order = os.environ.get(\"OOT_JOB_ORDER\") == \"1\" # (TICK-047, lift time; off: no job order statements)`. No comment in the source says what it changes.",
    "comment": null,
    "documented_in": null,
    "source": "undocumented",

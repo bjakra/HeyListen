@@ -10,7 +10,7 @@ python -I engine/scripts/list_switches.py
 
 and commit both files. A test (`engine/tests/test_switches_documented.py`) fails when a switch read in the source is missing here or the data file is out of date.
 
-1328 switches: 52 players may be told to use, 354 diagnostic, 922 developer-only; 1122 have a real explanation and 206 are marked `undocumented`.
+1329 switches: 52 players may be told to use, 354 diagnostic, 923 developer-only; 1123 have a real explanation and 206 are marked `undocumented`.
 
 ## How to set a switch
 
@@ -66,7 +66,7 @@ The entries below say what each one does, its values and default, and when it is
 |---|---:|---:|---:|---:|
 | [Renderer](#renderer-upscaling-frame-generation-hdr-v-sync-and-presentation) | 429 | 22 | 13 | 394 |
 | [Shaders and pipelines](#shaders-and-pipelines) | 119 | 6 | 0 | 113 |
-| [Memory and textures](#memory-and-textures) | 177 | 9 | 0 | 168 |
+| [Memory and textures](#memory-and-textures) | 178 | 9 | 0 | 169 |
 | [Audio](#audio) | 14 | 5 | 9 | 0 |
 | [Input and controllers](#input-and-controllers) | 13 | 1 | 12 | 0 |
 | [Native engine (`HL_*`)](#native-engine-hl_) | 65 | 1 | 25 | 39 |
@@ -5579,9 +5579,19 @@ The pipeline entry of a draw (a new one is queued for a worker; RX_VK_SYNC_PIPEL
 
 ## Memory and textures
 
-177 switches of textures, VRAM, mirrors, guest memory and write-backs.
+178 switches of textures, VRAM, mirrors, guest memory and write-backs.
 
 ### Textures, uploads and write-backs
+
+#### `HOS_TEX_COMPACT_MS` - developer
+
+(Better-aa, from Longshot 7b229f66, GPL-3.0) The texture data heap's compaction asked for once in a while: the lifted f_80797240 calls hos_oot_tex_compact_due where the game asks for a round (nx2/oot_patches.py patch_tex_compact); host/oot_tex_compact.h has why and the rule. HOS_TEX_COMPACT_MS=<ms>: at least that long between two rounds (1000 with no switch); 0: at every frame, as the game has it; off: never.
+
+**Values:** on or off (0, false, off, no and empty are off). **Default:** off (unset).
+
+**When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
+
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/oot_tex_compact.c:26`.
 
 #### `RX_ASTC_BC7` - developer
 
@@ -13197,13 +13207,13 @@ The work folder and the dump's folders, over `work/dump.txt`.
 
 #### `OOT_JOB_ORDER` - developer
 
-undocumented: nx2/oot_patches.py:334 reads it as a text value: `job_order = os.environ.get("OOT_JOB_ORDER") == "1" # (TICK-047, lift time; off: no job order statements)`. No comment in the source says what it changes.
+undocumented: nx2/oot_patches.py:368 reads it as a text value: `job_order = os.environ.get("OOT_JOB_ORDER") == "1" # (TICK-047, lift time; off: no job order statements)`. No comment in the source says what it changes.
 
 **Values:** text. **Default:** unset.
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In the build's environment (the builder or the command line), before the build runs. **Read at:** `nx2/oot_patches.py:334`.
+**Set it:** In the build's environment (the builder or the command line), before the build runs. **Read at:** `nx2/oot_patches.py:368`.
 
 #### `OOT_ROMFS` - developer
 

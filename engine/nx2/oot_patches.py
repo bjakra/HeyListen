@@ -16,6 +16,10 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   before any recompute. So the fixed path kept the dynamic path's last scale (0.75 docked: 1536x864 at every setting). Flag 1 now
   also asks for the recompute, and on the fixed path the flags +0xe20 bits 3/4 (a hardcoded 0.75 / 0.5 in place of the scale)
   are not looked at.
+- (better-aa, from Longshot 7b229f66) The texture data heap's compaction asked for once in a while (host/oot_tex_compact.h):
+  the manager's per-frame step (f_80797240) asks the Compaction thread for a round whenever none runs (its flag bit 1, always
+  set), and each texture a round moved is made again; hos_oot_tex_compact_due says whether it may ask now
+  (HOS_TEX_COMPACT_MS: once a second by default, 0 at every frame, the game's own). The round itself is untouched.
 - The Voice Language option kept after a restart (host/oot_voice.c): the voice resource's update (f_80a9ca30) asks
   GameDataMgr whether the option was written (f_80a9d1c0) and applies it only then; option.sav's value replaces the
   option without a write, so a saved choice was never applied (issue 430). The call goes through hos_oot_voice_option,
@@ -277,6 +281,36 @@ JO_PUSH_AT = (
 )
 
 
+# (better-aa, from Longshot 7b229f66) The texture data heap's compaction, asked for once in a while (host/oot_tex_compact.h has
+# why). f_80797240 is the texture data manager's per-frame step: with no round asked for (+776) and its flag bit 1 set (+960, set
+# once at its setup) it asks for one (+776 = 1), and with one asked for it sends the Compaction thread its message. The second
+# test also asks the host.
+TEXC_HEAD = "void f_80797240(Ctx *__restrict A64_NOESC c) {\n"
+TEXC_OLD = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1)) { goto L_80797288; }\n")
+TEXC_NEW = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1) || !hos_oot_tex_compact_due()) { goto L_80797288; }"
+            "   /* (nx2/oot_patches.py: the texture heap's compaction once in a while) */\n")
+TEXC_DECL = "extern int hos_oot_tex_compact_due(void);\n"
+
+
+def patch_tex_compact(s):
+    """The texture data manager's request for a compaction round through the host; None when the file has no such function, s
+    unchanged when the function is there but its code differs (another game version)."""
+    head = s.find(TEXC_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(TEXC_HEAD))
+    end = end if end >= 0 else len(s)
+    body = s[head:end]
+    if TEXC_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(TEXC_OLD) != 1:
+        return s
+    s = s[:head] + body.replace(TEXC_OLD, TEXC_NEW, 1) + s[end:]
+    return s if TEXC_DECL in s else s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXC_DECL, 1)
+
+
 def _body(source, head):
     start = source.find(head)
     if start < 0:
@@ -343,6 +377,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["mouse camera"] = 0
         done["voice option check"] = 0
         done["scene format"] = 0
+        done["texture compaction request"] = 0
     for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -403,6 +438,12 @@ def apply(gen, *, protect_hearts=False, required=False):
             if scene != out:
                 print("oot_patches: the scene buffer's format for native HDR in", os.path.basename(path))
             out = scene
+        texc = patch_tex_compact(out) if protect_hearts else None   # (found by name alone: the supported build's lift only)
+        if texc is not None and TEXC_NEW in texc:
+            done["texture compaction request"] += 1
+            if texc != out:
+                print("oot_patches: the texture heap's compaction asked for through the host in", os.path.basename(path))
+            out = texc
         if out != s:
             whole_write.write_whole(path, out, newline="")
     for what, n in done.items():
