@@ -110,11 +110,26 @@ int main(int argc, char **argv) {
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 0 && hos_binding(HOS_BIND_KEY, HOS_KEY_CAM_UP, 0) == 'E');
     hos_bind(HOS_BIND_PAD, HOS_KEY_CAM_UP, 0, HOS_PAD_SOUTH);   /* no gamepad input for it: ignored */
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 0) == HOS_PAD_SOUTH);
+    /* the Open menu control (pad_menu=7,8 in the file: both stick presses): one input or two, shared with the game's buttons */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == HOS_PAD_LSTICK && hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1) == HOS_PAD_RSTICK);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0, HOS_PAD_START);   /* (Start is Plus's too: nothing is taken from Plus) */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_PLUS, 0) == HOS_PAD_START && hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == HOS_PAD_START);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1, -1);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1) == -1);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0, -1);   /* (cleared: none) */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == -1);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1, HOS_PAD_BACK);   /* (a lone second slot moves to the first) */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == HOS_PAD_BACK && hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1) == -1);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0, HOS_PAD_TOUCHPAD);   /* (the touchpad's click is no binding) */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == HOS_PAD_BACK);
+    hos_bind(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 2, HOS_PAD_BACK);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 2) == -1);
     /* Enter with Alt is fullscreen, not Plus */
     release(), held[VK_RETURN] = held[VK_MENU] = 1;
     CHECK(!bound_down(HOS_SW_PLUS, 0));
     hos_bind(HOS_BIND_KEY, -1, 0, 0);
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'W' && hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 'E');
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 0) == -1 && hos_binding(HOS_BIND_PAD, HOS_BTN_OPEN_MENU, 1) == -1);   /* (reset: unset) */
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
@@ -137,7 +152,7 @@ class BoundKeysTests(unittest.TestCase):
         self.assertNotIn("key('W')", read, "read_input still reads WASD itself")
         with tempfile.TemporaryDirectory(prefix="hookshot-bound-keys-") as tmp:
             tmp = Path(tmp)
-            (tmp / "hookshot_options.ini").write_text("key_move_up=90,0\npad_move_up=0\n", encoding="utf-8")
+            (tmp / "hookshot_options.ini").write_text("key_move_up=90,0\npad_move_up=0\npad_menu=7,8\n", encoding="utf-8")
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk"),

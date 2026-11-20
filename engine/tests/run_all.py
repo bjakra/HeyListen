@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_switches_documented.py": [],
     "tests/test_sampler_retirement.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_texel_buffer_ownership.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_staging_burst.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
@@ -33,14 +34,34 @@ ARGS = {
     "tests/test_sparse_bind_failure.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dead_targets_sweep.py": ["--cxx", "{cxx}"],
     "tests/test_precompile_save.py": ["--cxx", "{cxx}"],
+    "tests/test_prepare_speed.py": ["--cxx", "{cxx}"],
+    "tests/test_state_report.py": ["--cxx", "{cxx}"],
+    "tests/test_zone_report.py": ["--cxx", "{cxx}"],
+    "tests/test_linux_pressure.py": ["--cxx", "{cxx}"],
+    "tests/test_compile_gate.py": ["--cxx", "{cxx}"],
+    "tests/test_profile_report.py": ["--cxx", "{cxx}"],
     "tests/test_settings_atomic.py": ["--cc", "gcc"],
     "tests/test_host_alloc_wait.py": ["--cc", "gcc"],
     "tests/test_audio_speaker_layout.py": ["--cxx", "{cxx}"],
+    "tests/test_audio_centre_spread.py": ["--cxx", "{cxx}"],
     "tests/test_mma_software.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_native_float_atomic_add.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_compute_local_memory.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_shader_module_guard.py": ["--cxx", "{cxx}"],
+    "tests/test_widen_alpha.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_flat_map.py": ["--cxx", "{cxx}"],
+    "tests/test_registration_host_copies.py": ["--cxx", "{cxx}"],
+    "tests/test_psychov35.py": ["--cxx", "{cxx}"],
+    "tests/test_scene_tonemap_pass.py": ["--cxx", "{cxx}"],
+    "tests/test_output_encode_pass.py": ["--cxx", "{cxx}"],
+    "tests/test_scene_format.py": ["--cc", "gcc"],
+    "tests/test_psychov35_dlss.py": ["--cxx", "{cxx}"],
+    "tests/test_dlss_pre_bloom.py": ["--cxx", "{cxx}"],
+    "tests/test_menu_rows.py": ["--cxx", "{cxx}"],
+    "tests/test_psychov35_default.py": ["--cxx", "{cxx}"],
+    "tests/test_psychov35_fsr3.py": ["--cxx", "{cxx}"],
+    "tests/test_psychov35_fsr3_fg.py": ["--cxx", "{cxx}"],
+    "tests/test_taau_typed_dispatch.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_replay_copies.py": ["--cxx", "{cxx}"],
     "tests/test_png_publication.py": ["--cxx", "{cxx}"],
     "tests/test_framelog_sink.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
@@ -54,9 +75,12 @@ ARGS = {
     "tests/test_present_aspect.py": ["--cxx", "{cxx}"],
     "tests/test_present_aspect_vulkan.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
+    "tests/test_predict_limits.py": ["--cxx", "{cxx}"],
     "tests/test_ssbo_binding_align.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
     "tests/test_msync_fast.py": ["--cxx", "{cxx}"],
+    "tests/test_wb_pool_eager.py": ["--cxx", "{cxx}"],
+    "tests/test_grow_lock.py": ["--cxx", "{cxx}"],
     "tests/test_readback_ticket.py": ["--cxx", "{cxx}"],
     "tests/test_capture_claim.py": ["--cxx", "{cxx}"],
     "tests/test_pcie_link.py": ["--cxx", "{cxx}"],
@@ -73,6 +97,7 @@ ARGS = {
     "tests/test_astc_cpu.py": ["--cxx", "{cxx}"],
     "tests/test_capture_past_end.py": ["--cxx", "{cxx}"],
     "tests/test_target_pool_cap.py": ["--cxx", "{cxx}"],
+    "tests/test_present_mode.py": ["--cxx", "{cxx}"],
     "tests/test_shadow_fast.py": ["--cxx", "{cxx}"],
     "tests/test_collect_fast.py": ["--cc", "{cxx}"],
     "tests/test_late_fix_order.py": ["--cxx", "{cxx}"],
@@ -88,11 +113,13 @@ ARGS = {
     "tests/test_present_geometry_trace.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
     "tests/test_update_order.py": ["--cc", "gcc"],
+    "tests/test_update_offer.py": ["--cc", "gcc"],
     "tests/test_short_sleep_timer.py": ["--cc", "gcc"],
     "tests/test_sdl_audio_reopen.py": ["--cc", "gcc"],
     "tests/test_guestpages.py": ["--cc", "gcc"],
     "tests/test_hl_trace.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
+    "tests/test_texture_handle_banks.py": ["--cxx", "{cxx}"],
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_vulkan_clear_mip.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
@@ -108,10 +135,14 @@ ARGS = {
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
+    "tests/test_oot_voice_option.py": ["--cc", "gcc"],
     "tests/test_movie_frame_count.py": ["--cc", "gcc"],
     "tests/test_high_fps_fixes.py": ["--cc", "gcc"],
     "tests/test_frame_whole.py": ["--cc", "gcc"],
     "tests/test_web_floor_steps.py": ["--cc", "gcc"],
+    "tests/test_scarecrow_timing.py": ["--cc", "gcc"],
+    "tests/test_above60_gameplay.py": ["--cc", "gcc"],
+    "tests/test_above60_ledge_zora_song.py": ["--cc", "gcc"],
     "tests/test_vcore_held_flush.py": ["--cxx", "{cxx}"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
@@ -125,6 +156,7 @@ ARGS = {
     "tests/test_fg_scale_sharpen.py": ["--cxx", "g++"],
     "tests/test_astc_bc_encode.py": ["--cxx", "{cxx}"],
     "tests/test_taau_env_lookup.py": ["--cxx", "g++"],
+    "tests/test_upscaler_off.py": ["--cxx", "{cxx}"],
     "tests/test_target_overlap.py": ["--cxx", "g++"],
     "tests/test_segment_plan.py": ["--cxx", "g++"],
     "tests/test_desc_counts.py": ["--cxx", "{cxx}"],
@@ -136,6 +168,8 @@ ARGS = {
     "tests/test_game_font.py": ["--cxx", "{cxx}"],
     "tests/test_menu_utf8.py": ["--cxx", "{cxx}"],
     "tests/test_menu_keys.py": ["--cxx", "{cxx}"],
+    "tests/test_menu_touchpad.py": [],
+    "tests/test_warp_wide.py": [],
     "tests/test_prompt_font_bind.py": ["--cc", "gcc"],
     "tests/test_hl_gates.py": ["--cc", "gcc"],
     "tests/test_stick_dead_zone.py": ["--cc", "gcc", "--cxx", "g++"],
@@ -161,6 +195,14 @@ ARGS = {
     "tests/test_seed_kept_loaded.py": ["--cxx", "g++"],
     "tests/test_prepare_seed_stamp.py": ["--cxx", "g++"],
     "tests/test_lower_atomg_cas.py": ["--cxx", "g++"],
+    "tests/test_lower_isberd_output.py": ["--cxx", "g++"],
+    "tests/test_lower_ldg_uniform_order.py": ["--cxx", "g++"],
+    "tests/test_lower_tld_ms.py": ["--cxx", "g++"],
+    "tests/test_lower_end_at_closing_branch.py": ["--cxx", "g++"],
+    "tests/test_lower_immediate_not_register.py": ["--cxx", "g++"],
+    "tests/test_lower_r2ur_one_register.py": ["--cxx", "g++"],
+    "tests/test_lower_lds_after_sts.py": ["--cxx", "clang++"],
+    "nx2/test_image_arrays.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_lower_lea_hi_constant.py": ["--cxx", "g++"],
     "tests/test_wb_diff_split.py": ["--cxx", "g++"],
     "tests/test_native_suatom.py": ["--cxx", "clang++"],
@@ -191,6 +233,7 @@ ARGS = {
     "tests/test_jt_mark_export.py": ["--cxx", "{cxx}"],
     "tests/test_vcore_texels.py": ["--cxx", "{cxx}"],
     "tests/test_vcore_video_acquire.py": ["--cxx", "{cxx}"],
+    "tests/test_gpu_choice.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -202,6 +245,8 @@ MODULES = {
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
     "tests/test_udmabuf_limit_unreadable.py": ({"windows"}, "the Linux guest window's start-up check (POSIX file descriptors)"),
+    "tests/test_no_dmabuf_window.py": ({"windows"}, "the Linux guest window's start-up check"),
+    "tests/test_fs_path_utf8.py": ({"linux"}, "native Windows filesystem conversion APIs"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     "tests/test_shader_module_guard.py": ({"linux"}, "Windows structured exceptions"),
     "tests/test_log_batch.py": ({"linux"}, "the Windows log writer: SRW locks and threads"),
@@ -290,9 +335,9 @@ def python_check(rel, tools, timeout):
 
 
 def cpp_checks(tools, timeout):
-    """gpu/vk/tests: the presentation rectangle (all of it), the lowering harness built and run over no programs
-    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles), and the
-    lowering's register-marker regression"""
+    """gpu/vk/tests: the presentation rectangle (all of it), the mesh fallback's push constant offset rewrite, the lowering
+    harness built and run over no programs (the programs it reads are dumped from the game, so here it only shows the
+    lowering still compiles), and the lowering's register-marker regression"""
     cxx = tools["cxx"]
     out = []
 
@@ -309,11 +354,15 @@ def cpp_checks(tools, timeout):
         return run
     rect = "gpu/vk/tests/present_rect_test.cpp"
     out.append((rect, build_and_run(rect, ["-Wall", "-Wextra", "-Werror"], [])))
+    push = "gpu/vk/tests/push_fix_test.cpp"   # (the mesh fallback's push constant access chains: offset given as member index)
+    out.append((push, build_and_run(push, ["-O1", "-Wall", "-Wextra", "-Werror"], [])))
     lower = "gpu/vk/tests/lower_test.cpp"
     eden, compat = os.path.join(ROOT, "gpu", "vk", "eden"), os.path.join(ROOT, "gpu", "vk", "compat")
     out.append((lower, build_and_run(lower, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], ["{tmp}"])))
     regmap = "gpu/vk/tests/regmap_marker_test.cpp"   # (the lowering's renamed-register markers: no number mapped twice)
     out.append((regmap, build_and_run(regmap, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
+    ldsm = "gpu/vk/tests/ldsm_address_test.cpp"   # (LDSM's row addresses kept apart from its shuffles' registers)
+    out.append((ldsm, build_and_run(ldsm, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
     return out, ([] if cxx else ["a C++ compiler"])
 
 

@@ -1657,7 +1657,8 @@ twenty-three 1280x720 RGBA16F (172 MB), and 65 finalized but kept (212 MB). BC c
 ### What releases a chunk today
 
 The back end was told when a pool is made (`memory_pool_flags`), never when it ends. A chunk left the pool table only in
-three ways: a larger import took it in (`retire_pool`), the import-pressure rule fired (`RX_VK_IMPORT_HIGH`, off on Windows),
+three ways: a larger import took it in (`retire_pool`), the import-pressure rule fired (`RX_VK_IMPORT_HIGH`, off on Windows but
+on AMD),
 or `RX_VK_NO_HOST_IMPORT` gave back its import alone (the entry and the mirror stay). A mirror goes only through the idle
 rules: 6000 mirror epochs, or 600 when the mirror budget or the 80% VRAM rule presses. So the chunks and mirrors of a zone the
 game has left stay for good unless VRAM presses. That is the play sessions' growth (H1: live imports 0.16 -> 6.6 GB over 17
@@ -1672,7 +1673,8 @@ submissions ago.
     double-finalize case);
   - once the replay has taken a capture made after every submit that came before that finalize, each chunk over its range
     with no live pool left (`hos_gpu_live_pools`: a newer pool at the same address keeps the chunk) retires as `retire_pool`
-    does. Its mirror is freed after the GPU, its import is given back (`retired_imports_give_back`: on NVIDIA by default),
+    does. Its mirror is freed after the GPU, its import is given back (`retired_imports_give_back`: by default on Linux,
+    and on Windows on NVIDIA and AMD),
     there is no inheritance, and the write-backs it left out are dropped;
   - a chunk bound by the recording under way waits one submission, and that is counted;
   - log line: `vk: chunks retired as their game pools all ended`.

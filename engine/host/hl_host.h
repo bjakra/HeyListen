@@ -48,6 +48,32 @@ void hl_answer(uint64_t guest, A64Fn fn, HlOn on, const char *what);
     __attribute__((constructor)) static void hl_solver_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
     extern const int hl_solver_hook_##addr
 
+/* HL_BGM_HOOK(83373400, "<hash>"): a lift hook (nx2/hl_gates.py) in the music manager's update (inside the sound job): its clock
+   counts whole 60 Hz steps and the change flags the sound gate held back reach it (host/hl_high_fps.c). Nothing in C. */
+#define HL_BGM_HOOK(addr, hash)     __attribute__((constructor)) static void hl_bgm_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_bgm_hook_##addr
+
+/* HL_TURN_HOOK(8263e8e0, "<hash>"); HL_HORSE_HOOK(82c59eb0, "<hash>"); HL_FLOOR_HOOK(80159dc0, "<hash>", "<label>"): lift hooks
+   (nx2/hl_gates.py) for three places that break above a 60 cap: Gohma's steering rate (Longshot 3ab8cae6), Epona's jump blend
+   (8e8a06db) and a moving floor's carry, the Shadow Temple's barge (4f755527). host/hl_high_fps.c has the host side. Nothing in C. */
+#define HL_TURN_HOOK(addr, hash) \
+    __attribute__((constructor)) static void hl_turn_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
+    extern const int hl_turn_hook_##addr
+#define HL_HORSE_HOOK(addr, hash) \
+    __attribute__((constructor)) static void hl_horse_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
+    extern const int hl_horse_hook_##addr
+#define HL_FLOOR_HOOK(addr, hash, label) \
+    __attribute__((constructor)) static void hl_floor_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
+    extern const int hl_floor_hook_##addr
+
+/* HL_DRIVE_HOOK(804f5030, "<hash>"); HL_LOOP_HOOK(802cfca0, "<hash>"); HL_POSE_HOOK(80944aa0, "<hash>"); HL_SONG_HOOK(832b2af0, "<hash>"):
+   lift hooks (nx2/hl_gates.py) for four more places that break above a 60 cap: Link's pull-up onto a ledge (Longshot d30b9479),
+   the frozen Zoras (6aa5d653: the clock of a loop of one frame, and the time its skeleton is drawn at) and a song's notes on the
+   ocarina (10010630). host/hl_high_fps.c and host/hl_step.c have the host side. Nothing in C. */
+#define HL_DRIVE_HOOK(addr, hash)     __attribute__((constructor)) static void hl_drive_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_drive_hook_##addr
+#define HL_LOOP_HOOK(addr, hash)     __attribute__((constructor)) static void hl_loop_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_loop_hook_##addr
+#define HL_POSE_HOOK(addr, hash)     __attribute__((constructor)) static void hl_pose_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_pose_hook_##addr
+#define HL_SONG_HOOK(addr, hash)     __attribute__((constructor)) static void hl_song_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); }     extern const int hl_song_hook_##addr
+
 /* HL_HEAP_HOOK(804566e0, "<hash>"): a lift hook (nx2/hl_gates.py) around f_804566e0's four allocations that are not checked
    (two CPU buffers, two GPU-memory calls): a failed one is tried again in the heap's parents (host/hl_heap_retry.c). Both
    pairs of lines or none. Nothing in C. */
@@ -55,10 +81,11 @@ void hl_answer(uint64_t guest, A64Fn fn, HlOn on, const char *what);
     __attribute__((constructor)) static void hl_heap_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
     extern const int hl_heap_hook_##addr
 
-/* HL_WHOLE_HOOK(80a87e50, "<hash>", <reg>, "<key>"); a lift hook (nx2/hl_gates.py) after the function's cut of an amount of
+/* HL_WHOLE_HOOK(80a87e50, "<hash>", <reg>, "<key>"[, "u" | "u<N>"]); a lift hook (nx2/hl_gates.py) after the function's cut of an amount of
    the frame step to whole frames into x<reg>, making the count hos_frame_whole(<key>, amount, count) (host/hl_step.c): the
-   fractions carried per counter above a 60 cap. Nothing in C. */
-#define HL_WHOLE_HOOK(addr, hash, reg, key) \
+   fractions carried per counter above a 60 cap ("u": the cut is unsigned; "u<N>": the unsigned cut that the addition to
+   x<N> follows). Nothing in C. */
+#define HL_WHOLE_HOOK(addr, hash, reg, key, ...) \
     __attribute__((constructor)) static void hl_whole_decl_##addr(void) { hl_gate_declared(0x##addr##ULL); } \
     extern const int hl_whole_hook_##addr
 

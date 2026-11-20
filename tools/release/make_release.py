@@ -67,6 +67,29 @@ def sha256(path):
     return h.hexdigest()
 
 
+def prompt_pins():
+    """nx2/prompt_requirements.txt's pins as (name, version)"""
+    with open(os.path.join(ENGINE, "nx2", "prompt_requirements.txt"), encoding="utf-8") as f:
+        lines = [l.split("#")[0].strip() for l in f.read().splitlines()]
+    return [tuple(l.split("==")) for l in lines if l]
+
+
+def missing_prompt_packages(package):
+    """The pins of nx2/prompt_requirements.txt that the package folder's Python (tools/python) does not have installed"""
+    site = os.path.join(package, "tools", "python", "Lib", "site-packages")
+    have = {n.lower() for n in os.listdir(site)} if os.path.isdir(site) else set()
+    return ["%s==%s" % p for p in prompt_pins() if "%s-%s.dist-info" % (p[0].lower().replace("-", "_"), p[1]) not in have]
+
+
+def check_prompt_packages(package):
+    """Stops a release whose builder could not draw the button prompts: nx2/make_game.py skips them without fontTools (and the
+    game then shows the Switch's icons whatever the Button prompts row says: issue #69)"""
+    missing = missing_prompt_packages(package)
+    if missing:
+        sys.exit("the package's Python lacks %s: the game would keep the Switch's button icons (nx2/prompt_requirements.txt)"
+                 % ", ".join(missing))
+
+
 def need_dotnet():
     exe = shutil.which("dotnet")
     sdks = ""
@@ -175,8 +198,12 @@ def main():
         run(py + [os.path.join(ROOT, "tools", "release", "check_states.py"), states] + ["--title-id=" + t for t in ids])
     package = os.path.join(work, "package")
     #    (TICK-045: the play profile from the repository's profile/, recorded on this lifter's default lift, not the previous release's)
+    #    (--python-packages: the button prompts are drawn on the player's PC by nx2/prompt_assets.py, which needs fontTools, Pillow and
+    #    the ASTC tools in the builder's Python; the previous release's Python part has none, and the game then keeps the Switch's icons)
     run(py + [parts_py, "package", package, "--publish", publish, "--setup", setup, "--list", previous,
-              "--profile", os.path.join(ROOT, "profile")], env=env)
+              "--profile", os.path.join(ROOT, "profile"),
+              "--python-packages", os.path.join(ENGINE, "nx2", "prompt_requirements.txt")], env=env)
+    check_prompt_packages(package)
     for f in ("THIRD_PARTY_NOTICES.md",):
         shutil.copyfile(os.path.join(ROOT, f), os.path.join(package, f))
 

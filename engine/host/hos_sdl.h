@@ -4,6 +4,7 @@
    way (SDL3.dll and SDL2.dll; on Linux libSDL3.so.0 and libSDL2-2.0.so.0). HOS_SDL_VERSION=2 takes SDL2 even with an
    SDL3 there. */
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 int hos_sdl_load(void);   /* 3 or 2, the SDL loaded (the first call loads it); 0 when there is none */
@@ -75,6 +76,9 @@ int16_t hos_sdl_pad_axis(void *pad, int axis);
 const char *hos_sdl_pad_name(void *pad);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
+/* (the log line of an opened pad) its SDL mapping string ("" when unknown); whether it has an SDL button (-1 unknown) */
+void hos_sdl_pad_mapping(void *pad, char *out, size_t cap);
+int hos_sdl_pad_has_button(void *pad, int button);
 /* (HD rumble, host/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
    unknown, or no such call); whether the SDL has the effect call; a raw effect sent (SDL_SendGamepadEffect /
    SDL_GameControllerSendEffect): 1 when SDL took it */

@@ -15,6 +15,7 @@
 
 python -I -B tests/test_gpu_time_057.py
 """
+import re
 import sys
 from pathlib import Path
 
@@ -43,10 +44,11 @@ def main():
     for name in ("vkBeginCommandBuffer", "vkCmdPipelineBarrier2", "vkCmdBeginRendering", "vkCmdDraw", "vkCmdDrawIndexed",
                  "vkCmdDrawIndirect", "vkCmdDrawIndexedIndirect", "vkCmdDrawIndirectCount", "vkCmdDrawIndexedIndirectCount",
                  "vkCmdDrawMeshTasksEXT", "vkCmdDrawMeshTasksIndirectEXT", "vkCmdDrawMeshTasksIndirectCountEXT"):
-        need(f"#define {name}(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::{name}(c_, __VA_ARGS__))" in work,
-             f"vk_work.h: {name} counted by its command buffer")
-    need("#define vkCmdEndRendering(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdEndRendering(c_ __VA_OPT__(,) __VA_ARGS__))"
-         in work, "vk_work.h: vkCmdEndRendering(cmd) with one argument")
+        # (better-aa: another note first is allowed, RX_VK_BARRIER_SRC's note_begin / note_gfx_work)
+        need(re.search(r"#define " + name + r"\(c_, \.\.\.\) \((::mkwvk::note_\w+\(c_\), )*::mkwvk::note_work_cmd\(c_\), ::vkx::" + name +
+                       r"\(c_, __VA_ARGS__\)\)", work), f"vk_work.h: {name} counted by its command buffer")
+    need(re.search(r"#define vkCmdEndRendering\(c_, \.\.\.\) \((::mkwvk::note_\w+\(c_\), )*::mkwvk::note_work_cmd\(c_\), "
+                   r"::vkx::vkCmdEndRendering\(c_ __VA_OPT__\(,\) __VA_ARGS__\)\)", work), "vk_work.h: vkCmdEndRendering(cmd) with one argument")
     nw = body(work, "inline void note_work() {")
     need("foreign_work.fetch_add(1" in nw and "work_epoch.fetch_add(1" in nw, "vk_work.h: note_work counts foreign work and the epoch")
     no = body(work, "inline void note_other_work(VkCommandBuffer c) {")
@@ -105,7 +107,7 @@ def main():
     need("if (p->idle_freed_epoch && mirror_epoch - p->idle_freed_epoch <= kLongIdle)" in mk and "p->remade++" in mk,
          "vk_memory.cpp: a mirror made again soon after it went counted")
     need("gpu_tail_note_late(c->late_value)" in mem and
-         mem.index("gpu_tail_note_late(c->late_value)") < mem.index("vk_timeline_wait(c->late_value);"),
+         mem.index("gpu_tail_note_late(c->late_value)") < mem.index("vk_timeline_wait_for(c->late_value"),
          "vk_memory.cpp: the late value noted before the wait")
 
     rep = read("vk_replay.cpp")

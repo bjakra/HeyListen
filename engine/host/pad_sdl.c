@@ -28,7 +28,8 @@ void hos_host_thread_register_self(const char *name);   /* hos_prof.c */
 
 /* (BTN_A ... BTN_RIGHT are HOS_PAD_SOUTH ... HOS_PAD_RIGHT) */
 enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_BACK, BTN_GUIDE, BTN_START, BTN_LSTICK, BTN_RSTICK, BTN_LSHOULDER, BTN_RSHOULDER,
-       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_MISC1, BTN_N = 21 };
+       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_MISC1, BTN_PADDLE1, BTN_PADDLE2, BTN_PADDLE3, BTN_PADDLE4,
+       BTN_TOUCHPAD /* (20 in SDL2 and SDL3 both) */, BTN_N = 21 };
 enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT };
 
 #define MAX_PADS 8
@@ -272,6 +273,37 @@ static void motion_poll(int64_t now, int count) {
     ReleaseSRWLockExclusive(&state_lock);
 }
 
+/* (for reports: an opened pad's line says what SDL made of it and which inputs open the menu; the first press of each of
+   its menu inputs is logged once, so a log shows which SDL button a pad's Home or Share is) */
+static void pad_log_open(void *gc) {
+    char map[400];
+    hos_sdl_pad_mapping(gc, map, sizeof map);
+    hos_log("hid: \"%s\": SDL type %d, mapping \"%s\"", hos_sdl_pad_name(gc), hos_sdl_pad_type(gc), map[0] ? map : "unknown");
+    hos_log("hid: \"%s\": buttons SDL reports: Home %d, Select/Share %d, Start/Options %d, Misc/Share %d, touchpad click %d "
+            "(-1: SDL cannot say, 0: none)", hos_sdl_pad_name(gc), hos_sdl_pad_has_button(gc, BTN_GUIDE),
+            hos_sdl_pad_has_button(gc, BTN_BACK), hos_sdl_pad_has_button(gc, BTN_START), hos_sdl_pad_has_button(gc, BTN_MISC1),
+            hos_sdl_pad_has_button(gc, BTN_TOUCHPAD));
+    hos_log("hid: \"%s\": the Insert menu opens with Home, the touchpad click, Select and Start together, "
+            "or the Open menu control of the Controls page", hos_sdl_pad_name(gc));
+#ifdef _WIN32
+    if (GetModuleHandleA("GameOverlayRenderer64.dll"))
+        hos_log("hid: Steam's overlay is loaded: Steam Input may keep a pad's Home button");
+#endif
+}
+static void pad_log_presses(int i, void *gc) {
+    static uint32_t seen[MAX_PADS];
+    static uint32_t seen_serial[MAX_PADS];
+    static const struct { int button; const char *name; } menu_buttons[] = {
+        {BTN_GUIDE, "Home (SDL guide)"}, {BTN_BACK, "Select/Share (SDL back)"}, {BTN_START, "Start/Options (SDL start)"},
+        {BTN_MISC1, "SDL misc1"}, {BTN_TOUCHPAD, "touchpad click"}};
+    if (seen_serial[i] != pads[i].serial) seen_serial[i] = pads[i].serial, seen[i] = 0;
+    for (unsigned k = 0; k < sizeof menu_buttons / sizeof *menu_buttons; k++)
+        if (!(seen[i] >> k & 1) && hos_sdl_pad_button(gc, menu_buttons[k].button)) {
+            seen[i] |= 1u << k;
+            hos_log("hid: \"%s\": %s pressed (SDL button %d)", hos_sdl_pad_name(gc), menu_buttons[k].name, menu_buttons[k].button);
+        }
+}
+
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
 static void pads_poll(void) {
     static int64_t next_scan = 0;
@@ -314,6 +346,7 @@ static void pads_poll(void) {
                 pads[slot].has_bias = 0;
                 hos_log("hid: controller \"%s\" connected (SDL)%s", hos_sdl_pad_name(gc),
                         pads[slot].motion ? ", with a gyroscope" : "");
+                pad_log_open(gc);
             }
         }
         uint64_t b = 0;
@@ -343,6 +376,9 @@ static void pads_poll(void) {
             count++;
             for (int k = BTN_A; k <= BTN_RIGHT; k++)   /* (SDL3's gamepad buttons are in SDL2's order) */
                 if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
+            /* (the touchpad's click: the Insert menu's, as Home is; nn_hid.c's controls cannot bind it) */
+            if (hos_sdl_pad_button(gc, BTN_TOUCHPAD)) b |= 1ULL << HOS_PAD_TOUCHPAD;
+            pad_log_presses(i, gc);
             if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
             const int inv_x = rx_option(16, 0);

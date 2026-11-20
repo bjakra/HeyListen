@@ -50,7 +50,8 @@ using VkSampleCountFlagBits = uint32_t;
 using VkImageLayout = uint32_t;
 using VkFilter = uint32_t;
 constexpr uint32_t VK_FORMAT_UNDEFINED = 0, VK_FORMAT_B10G11R11_UFLOAT_PACK32 = 122,
-                   VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 = 123, VK_FORMAT_R8G8B8A8_UNORM = 37;
+                   VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 = 123, VK_FORMAT_R8G8B8A8_UNORM = 37,
+                   VK_FORMAT_R16G16B16A16_SFLOAT = 97;
 constexpr uint32_t VK_IMAGE_TYPE_2D = 1, VK_IMAGE_ASPECT_COLOR_BIT = 1, VK_SAMPLE_COUNT_1_BIT = 1,
                    VK_IMAGE_LAYOUT_GENERAL = 1, VK_FILTER_LINEAR = 1;
 constexpr uint32_t VK_FORMAT_FEATURE_BLIT_SRC_BIT = 1, VK_FORMAT_FEATURE_BLIT_DST_BIT = 2,
@@ -98,6 +99,8 @@ struct Texture {
 Texture src, dst;
 nvn_tex source, destination;
 bool override_view = false, movie = false, pipeline_ok = true;
+bool psycho = false;
+bool missing_input_view = false, missing_output_view = false;
 bool missing_storage = false, missing_sample = false, missing_linear = false;
 unsigned blits = 0, typed_calls = 0, views = 0, movie_calls = 0, writes = 0;
 struct {
@@ -116,7 +119,7 @@ void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice, VkFormat format, VkFo
     p->optimalTilingFeatures = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-    if (missing_storage && format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+    if (missing_storage && (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || format == VK_FORMAT_R16G16B16A16_SFLOAT))
         p->optimalTilingFeatures &= ~VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
     if (missing_sample && format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
         p->optimalTilingFeatures &= ~VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
@@ -126,6 +129,10 @@ void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice, VkFormat format, VkFo
 void end_pass(VkCommandBuffer) {}
 // (the temporal upscaler, off here: upscale_stub offers it the frame first, vk_draw.cpp temporal_rejected_network)
 bool temporal_wanted() { return false; }
+bool upscaler_off_now = false;   // (the Upscaler row's Off, vk_temporal.cpp upscaler_off)
+bool upscaler_off() { return upscaler_off_now; }
+bool scene_tonemap_on() { return psycho; }
+namespace fsr3_inputs { bool wanted() { return false; } }   // (FSR 3.1, off here too)
 static bool temporal_rejected_network(VkCommandBuffer, uint64_t, Texture *, const nvn_tex *, Texture *, const nvn_tex *) {
     return false;
 }
@@ -150,18 +157,20 @@ VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImage
     assert(!v && type == VK_IMAGE_VIEW_TYPE_2D);
     views++;
     if (t == &src) {
-        assert(use == ViewUse::Sample && forced == VK_FORMAT_UNDEFINED);
-        *f = VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
-        return (VkImageView)101;
+        assert(use == ViewUse::Sample && forced == (psycho ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_UNDEFINED));
+        *f = psycho ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+        return missing_input_view ? 0 : (VkImageView)101;
     }
-    assert(t == &dst && use == ViewUse::Storage && forced == VK_FORMAT_B10G11R11_UFLOAT_PACK32);
-    *f = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-    return (VkImageView)102;
+    assert(t == &dst && use == ViewUse::Storage && forced == (psycho ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32));
+    *f = psycho ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    return missing_output_view ? 0 : (VkImageView)102;
 }
+bool typed_temporal = false;
 static bool typed_upscale(VkCommandBuffer, VkImageView input, VkImageView output, Texture *t,
                           uint32_t level, uint64_t, const char *, bool temporal) {
     assert(input == (VkImageView)101 && output == (VkImageView)102 && t == &dst && level == 0 &&
-           !temporal);
+           (!psycho || temporal));
+    typed_temporal = temporal;
     typed_calls++;
     return pipeline_ok;
 }
@@ -202,10 +211,16 @@ int main(int argc, char **argv) {
         src.levels = 2;
     if (mode == "swizzle")
         source.d.swizzle_r = 4;
-    if (mode == "fd")
+    if (mode == "fd" || mode == "off-fd")
         key = 0xfd029a317a9a4b94ull;
-    if (mode == "9dc")
+    if (mode == "9dc" || mode == "9dc-same" || mode == "off-9dc-same")
         key = 0x9dc98871eb7fc101ull;
+    if (mode == "off-fd" || mode == "off-9dc-same")
+        upscaler_off_now = true;   // (Upscaler Off: the same typed upscale, with no edge smoothing)
+    if (mode == "9dc-same" || mode == "off-9dc-same" || mode == "same") {   // (the full-size pass: Render resolution 100%)
+        source.d.width = 128, source.d.height = 64;
+        src.width = 128, src.height = 64;
+    }
     if (mode == "pipeline-failure")
         pipeline_ok = false;
     if (mode == "no-storage")
@@ -217,13 +232,38 @@ int main(int argc, char **argv) {
     NvnState state;
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
+    if (mode.find("psycho") == 0) {
+        psycho=true;key=0xfd029a317a9a4b94ull;
+        src.format=dst.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+        if(mode=="psycho-mixed")src.format=VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+        if(mode=="psycho-view")override_view=true;
+        if(mode=="psycho-mip")src.levels=2;
+        if(mode=="psycho-swizzle")source.d.swizzle_r=4;
+        if(mode=="psycho-no-storage")missing_storage=true;
+        if(mode=="psycho-pipeline-failure")pipeline_ok=false;
+        if(mode=="psycho-null-input")missing_input_view=true;
+        if(mode=="psycho-null-output")missing_output_view=true;
+        const bool success=mode=="psycho";
+        assert(upscale_stub((VkCommandBuffer)5,state,key)==success);
+        assert(blits==0 && writes==(success?1u:0u));
+        assert(typed_calls==((success || mode=="psycho-pipeline-failure")?1u:0u));
+        printf("PASS: %s\n",mode.c_str());return 0;
+    }
+    if (mode == "same") {   // (another network that keeps the size: not an upscale, left to its dispatch as before)
+        assert(!upscale_stub((VkCommandBuffer)5, state, key) && typed_calls == 0 && blits == 0 && writes == 0);
+        puts("PASS: same");
+        return 0;
+    }
     assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured") {
+    if (mode == "captured" || mode == "fd" || mode == "9dc" || mode == "9dc-same" || mode == "off-fd" || mode == "off-9dc-same") {
+        // (the gameplay networks reach this only when left out (no f16 shaders): their RGB9E5 input read as B10G11R11 by the
+        // blit was the full-screen noise of RX_VK_NO_F16, and the full-size pass was skipped, the 3D black. Both as the TAAU
+        // network's stand-in draws (taau_stand_in: temporal, edges smoothed); the other networks' as before)
         if (typed_calls != 1 || views != 2 || blits != 0) {
             puts("RED: captured RGB9E5 input still used physical-format blit");
             return 7;
         }
-        assert(writes == 1);
+        assert(writes == 1 && typed_temporal == (mode != "captured" && mode.rfind("off-", 0) != 0));
     } else if (mode == "movie") {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
     } else if (mode == "pipeline-failure") {
@@ -247,10 +287,13 @@ def main():
         tmp = Path(tmp)
         source = tmp / 'check.cpp'
         exe = tmp / ('check.exe' if os.name == 'nt' else 'check')
-        source.write_text(PREFIX + body + SUFFIX, encoding='utf-8')
+        # (better-aa: upscale_stub notes its output for frame generation's HUD mark in a global beside it)
+        source.write_text(PREFIX + 'thread_local Texture* stub_picture = nullptr;\n' + body + SUFFIX, encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-UNDEBUG', str(source), '-o', str(exe)], env=env, check=True)
-        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', '9dc',
-                 'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear')
+        cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', '9dc', '9dc-same', 'off-fd', 'off-9dc-same', 'same',
+                 'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear',
+                 'psycho', 'psycho-mixed', 'psycho-view', 'psycho-mip', 'psycho-swizzle', 'psycho-no-storage',
+                 'psycho-pipeline-failure', 'psycho-null-input', 'psycho-null-output')
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True)
 

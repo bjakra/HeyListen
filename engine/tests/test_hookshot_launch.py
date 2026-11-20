@@ -70,7 +70,7 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("PYTHONPATH=UNSET", lines)
         self.assertIn("HOME=%s" % os.environ["HOME"], lines)
 
-    def test_play_starts_the_game_in_bin_not_the_launcher(self):
+    def test_play_starts_the_game_in_bin_not_the_launcher_and_leaves_the_update_offer_on(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
             root = Path(tmp)
             folder = root / "game"
@@ -87,7 +87,7 @@ class LaunchTests(unittest.TestCase):
             ran = subprocess.run([str(LAUNCH), str(folder)], env=self.env(), text=True, capture_output=True, check=False)
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(ran.stdout.splitlines()[0], "game")
-        self.assertIn("CHECK=1", ran.stdout)
+        self.assertIn("CHECK=UNSET", ran.stdout)   # (--play has no window: the game's own update offer looks)
 
     def test_a_folder_argument_wins(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:

@@ -60,8 +60,9 @@ for name in $names; do
 done
 
 cd "$folder"
-# (--play already chose Play. The game's own update question stays for a bin/hookshot the player started themselves)
-export HOOKSHOT_NO_UPDATE_CHECK=1
+# (--play has no window to look for updates, so the game's own offer does it (host/hos_update.c: a few seconds at most, nothing when
+# offline, and the player can keep their version or turn it off in the game's Settings). The names above, HOOKSHOT_NO_UPDATE_CHECK
+# among them, are gone: the window's Play, which asked already, sets it itself)
 if [ -x ./bin/hookshot ]; then
     exec ./bin/hookshot
 fi

@@ -445,8 +445,13 @@ static const unsigned char key_default[HOS_KEY_N][2] = {
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
     {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
 static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
+/* (the Controls page's Open menu: one gamepad input or two together that open the Insert menu, -1 none: the default; the
+   fixed ways, Home, Select + Start and the touchpad's click, stay. pad_menu=<a>,<b> in the ini) */
+static volatile LONG menu_bind[2] = {-1, -1};
 
 static void binds_default(void) {
+    InterlockedExchange(&menu_bind[0], -1);
+    InterlockedExchange(&menu_bind[1], -1);
     for (int i = 0; i < HOS_KEY_N; i++) {
         if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
         for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
@@ -480,6 +485,17 @@ static void binds_load(void) {
             if (!strcmp(line, "options_version")) version = atoi(eq + 1);
             const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
             had_keys |= keys;
+            if (pad && !strcmp(line + 4, "menu")) {   /* (pad_menu=<a>,<b>: positions below HOS_PAD_N, else none) */
+                const char *comma = strchr(eq + 1, ',');
+                int a = atoi(eq + 1), b = comma ? atoi(comma + 1) : -1;
+                a = a >= 0 && a < HOS_PAD_N ? a : -1;
+                b = b >= 0 && b < HOS_PAD_N && b != a ? b : -1;
+                if (a < 0) a = b, b = -1;
+                InterlockedExchange(&menu_bind[0], a);
+                InterlockedExchange(&menu_bind[1], b);
+                changed++;
+                continue;
+            }
             for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
                 changed++;
@@ -512,6 +528,7 @@ static void binds_load(void) {
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();
+    if (set == HOS_BIND_PAD && button == HOS_BTN_OPEN_MENU) return slot >= 0 && slot <= 1 ? (int)menu_bind[slot] : -1;
     if (button < 0 || button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1)
         return set == HOS_BIND_PAD ? -1 : 0;
     return set == HOS_BIND_PAD ? (slot ? -1 : (int)pad_bind[button]) : (int)key_bind[button][slot];
@@ -522,6 +539,16 @@ void hos_bind(int set, int button, int slot, int code) {
     binds_load();
     if (button < 0) {
         binds_default();
+        return;
+    }
+    if (set == HOS_BIND_PAD && button == HOS_BTN_OPEN_MENU) {   /* (an input or two, shared with the game's buttons) */
+        if (slot < 0 || slot > 1 || code < -1 || code >= HOS_PAD_N) return;
+        InterlockedExchange(&menu_bind[slot], code);
+        if (menu_bind[0] < 0 && menu_bind[1] >= 0) {   /* (the first slot is the one set) */
+            InterlockedExchange(&menu_bind[0], menu_bind[1]);
+            InterlockedExchange(&menu_bind[1], -1);
+        }
+        if (menu_bind[0] == menu_bind[1]) InterlockedExchange(&menu_bind[1], -1);
         return;
     }
     if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
@@ -551,6 +578,9 @@ int32_t hos_stick_axis(int16_t v, int zone) {
     const int32_t a = v < -32767 ? -32767 : v, t = cut[(unsigned)zone < 6 ? zone : 0];
     return (a > t || a < -t) ? a : 0;
 }
+
+static volatile int xinput_pads_now;   /* (pads_read: the controllers XInput has, while it is polled) */
+int hos_xinput_pads(void) { return xinput_pads_now; }   /* (host/prompts.c: Auto's face) */
 
 static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     static int64_t next_read, retry[XUSER_MAX_COUNT];
@@ -604,11 +634,15 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         if (xinput_get((DWORD)p, &xs) != ERROR_SUCCESS) {
             if (was_connected[p]) hos_log("hid: controller %d disconnected", p);
             was_connected[p] = 0;
+            int any = 0;
+            for (int q = 0; q < XUSER_MAX_COUNT; q++) any |= was_connected[q];
+            xinput_pads_now = any;
             retry[p] = now + 1000000000LL;
             continue;
         }
         if (!was_connected[p]) hos_log("hid: controller %d connected", p);
         was_connected[p] = 1;
+        xinput_pads_now = 1;
         const WORD w = xs.Gamepad.wButtons;
         for (unsigned i = 0; i < sizeof map / sizeof *map; i++)
             if (w & map[i].x) raw |= 1ULL << map[i].b;
@@ -629,6 +663,13 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
     if ((raw & chord) == chord) raw &= ~chord;
     binds_load();
+    {   /* the Open menu control (menu_bind): its input or both of its two together open the menu (the menu reads
+           pad_raw_now above) and do not reach the game while held */
+        uint64_t mm = 0;
+        for (int k = 0; k < 2; k++)
+            if (menu_bind[k] >= 0) mm |= 1ULL << menu_bind[k];
+        if (mm && (raw & mm) == mm) raw &= ~mm;
+    }
     uint64_t b = 0;
     for (int i = 0; i < HOS_SW_N; i++)
         if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1)) b |= 1ULL << i;

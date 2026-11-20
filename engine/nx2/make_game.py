@@ -50,7 +50,8 @@ import toolchain as _toolchain
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
 # (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
 # library" three times and no controller worked: Discord #bug-reporting, 11-08)
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["HeyListen.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0", "hookshot.sym", "hookshot_vk.sym"] if LINUX else \
+    ["HeyListen.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll", "HeyListen.sym", "hookshot_vk.sym"]
 # (HeyListen: the Windows game and its launcher were hookshot.exe before; a folder built then has them, removed once the new ones are in)
 OLD_EXES = [] if LINUX else ["hookshot.exe", "hookshot.map"]
 # (Linux) the game folder's launcher script (builder/linux/hookshot-folder); the game itself is bin/hookshot, which the engine and the launcher both expect
@@ -323,19 +324,26 @@ def output_lines(p, silence):
         yield line
 
 
-def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None):
+def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, stall=None):
     """A step, its output printed as it comes. show: what of each line is printed (its None: nothing; on_line and a failure's
     reason still get the line itself). base: the environment it starts from (os.environ). silence: seconds without a line after
-    which the step is stopped; it returns None then (with check, the build fails)"""
+    which the step is stopped; it returns None then (with check, the build fails). stall: seconds without one of its @@stage or
+    @@progress lines (it may print other lines all the while: a status line every 10 s kept a stuck driver compile "talking" for
+    two hours) after which it is stopped the same way"""
     e = dict(os.environ if base is None else base, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                          errors="replace", bufsize=1)
     no_throttle(getattr(p, "_handle", None))
     lines = []
+    moved = time.monotonic()
     try:
         for line in output_lines(p, silence):
             line = line.rstrip()
+            if line.startswith(("@@stage ", "@@progress ")):
+                moved = time.monotonic()
+            elif stall and time.monotonic() - moved > stall:
+                raise Silent()
             shown = show(line) if show else line
             if PROGRESS_LINES and shown is not None and shown.startswith("@@"):
                 shown = None   # (a step's @@ lines are the window's: on_line has read them)
@@ -348,7 +356,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
         p.kill()
         p.wait()
         if check:
-            fail("%s printed nothing for %s and was stopped" % (os.path.basename(cmd[0]), span(silence)))
+            fail("%s printed nothing for %s and was stopped" % (os.path.basename(cmd[0]), span(silence or stall)))
         return None
     p.stdout.close()
     code = p.wait()
@@ -970,6 +978,7 @@ NOT_PREPARED = "the shaders were not prepared now"
 # (a run that prints nothing this long is stopped. Not its whole length: that is 25 minutes on some AMD GPUs, and the driver's own
 # step near the end can sit at 99% for minutes)
 PREPARE_SILENCE = 15 * 60
+PREPARE_STALL = 10 * 60   # (a prepare whose progress does not move for this long is stopped even if it keeps printing)
 GAME_ENV_DROP = ("HOOKSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD")
 
 
@@ -1008,10 +1017,10 @@ def show_prepared(line):
     return line if line.startswith(("@@stage ", "@@progress ")) or not line.startswith("@@") else line[2:]
 
 
-def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
+def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE, stall=PREPARE_STALL):
     """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
     some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
-    the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
+    the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds or making no progress for `stall` (then stopped), or
     any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
     def on_line(line):   # (--prepare: the game's @@stage and @@progress lines become the launcher's progress lines)
         if PROGRESS_LINES and line.startswith(("@@stage ", "@@progress ")):
@@ -1019,12 +1028,12 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
             say(*words)
     try:
         code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                   base=game_env(), silence=silence, on_line=on_line)
+                   base=game_env(), silence=silence, stall=stall, on_line=on_line)
     except OSError as e:
         not_prepared(str(e))
         return 1
     if code is None:
-        not_prepared("the game printed nothing for %s and was stopped" % span(silence))
+        not_prepared("the game printed nothing for %s or made no progress for %s, and was stopped" % (span(silence), span(stall)))
     elif code == 3:
         not_prepared("no usable Vulkan here")
     elif code:
@@ -1353,6 +1362,14 @@ def place_ngx_runtime(out):
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    # (DLSS Frame Generation's runtime goes beside it when the SDK folder has it: without it NGX takes the driver's own,
+    # maybe older, copy. A folder fetched before it was in the table has not: scripts/ngx_sdk.py adds it)
+    fg = ngx.runtime_name(platform, "framegen")
+    if os.path.isfile(ngx.runtime(sdk, platform, "framegen")):
+        print("NVIDIA DLSS Frame Generation: %s (NVIDIA's too)" % os.path.join(out, "ngx", fg), flush=True)
+    else:
+        print("NVIDIA DLSS Frame Generation: %s has no %s yet (scripts/ngx_sdk.py fetches it): until then NGX takes the "
+              "driver's own, which may be older" % (sdk, fg), flush=True)
     return dst
 
 

@@ -20,10 +20,12 @@
 #include <bcrypt.h>
 #include <commctrl.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include "../../host/hos_update_ver.h"   /* (safe_tag, ver_newer, the options file's update_check line: the game's update offer uses them too) */
 
 #define WM_STATUS (WM_APP + 1)
 #define WM_DONE (WM_APP + 2)
@@ -34,6 +36,7 @@ static wchar_t g_status[512];
 static volatile LONG g_percent = -1;
 static DWORD g_http_status;   /* (the last answer: 0 when the server was not reached) */
 static wchar_t g_cmdline[2048];
+static volatile LONG g_quick_http;   /* (--play's look for a newer release: a few seconds, not the downloads' minute) */
 
 typedef struct {
     char sha[65];
@@ -103,7 +106,8 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
     if (!s) s = WinHttpOpen(L"HeyListenBuilder-Setup/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!s) return 0;
     /* (a stalled download fails after a minute without data, with the message, instead of waiting forever: a GitHub 504 hour) */
-    WinHttpSetTimeouts(s, 30000, 30000, 30000, 60000);
+    if (g_quick_http) WinHttpSetTimeouts(s, 2000, 2000, 2000, 3000);
+    else WinHttpSetTimeouts(s, 30000, 30000, 30000, 60000);
     DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;   /* (a redirect never drops to clear text) */
     WinHttpSetOption(s, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof policy);
     HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
@@ -769,11 +773,200 @@ static int launch_installed(const wchar_t *args) {
     return 1;
 }
 
+/* ---- (RecompLauncher's Play) --play <game folder>: ported from Longshot's setup (builder/setup/setup.c play_folder, Zacharias Xenakis,
+   "--cli and --play for RecompLauncher on Windows"): the game in that folder, started like the game folder's launcher starts it and
+   waited for, so the launcher knows when the session ends. Here it also looks for a newer release first, which Longshot's does not:
+   a few seconds at most, nothing when offline, and the start is never held back by it. The question is asked here, so the game is
+   told not to ask again (HOOKSHOT_NO_UPDATE_CHECK=1). Not installing anything: the builder the launcher unpacked is the one in the
+   zip, and the launcher is what installs a newer release. ---- */
+/* (HOOKSHOT_SETUP_QUIET=1: no window, for a test; the message still goes to stderr) */
+static int play_quiet(void) {
+    const char *q = getenv("HOOKSHOT_SETUP_QUIET");
+    return q && strcmp(q, "0");
+}
+
+static void play_error(const wchar_t *msg) {
+    char u[2048];
+    const int n = WideCharToMultiByte(CP_UTF8, 0, msg, -1, u, (int)sizeof u - 8, NULL, NULL);
+    const HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD wrote;
+    if (n > 0 && h && h != INVALID_HANDLE_VALUE) WriteFile(h, "error: ", 7, &wrote, NULL), WriteFile(h, u, n - 1, &wrote, NULL), WriteFile(h, "\n", 1, &wrote, NULL);
+    if (!play_quiet()) MessageBoxW(NULL, msg, L"HeyListen", MB_OK | MB_ICONERROR);
+}
+
+/* (a small text file of the game folder, all of it, or "" when it is not there) */
+static void play_read(const wchar_t *path, char *out, DWORD cap) {
+    out[0] = 0;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    if (!ReadFile(f, out, cap - 1, &got, NULL)) got = 0;
+    CloseHandle(f);
+    out[got] = 0;
+}
+
+/* (the value of name= in a text, trimmed; 0 when it is not there) */
+static int play_value(const char *text, const char *name, char *out, size_t cap) {
+    const size_t n = strlen(name);
+    for (const char *p = text; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL) {
+        if (strncmp(p, name, n) || p[n] != '=') continue;
+        size_t len = strcspn(p + n + 1, "\r\n");
+        while (len && (p[n + len] == ' ' || p[n + len] == '\t')) len--;
+        if (!len || len >= cap) return 0;
+        memcpy(out, p + n + 1, len), out[len] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+typedef struct { char tag[128]; int ok; } PlayLook;
+static DWORD WINAPI play_look(LPVOID p) {
+    PlayLook *look = (PlayLook *)p;
+    Mem m = {0};
+    g_quick_http = 1;
+    if (http_get("https://api.github.com/repos/Sacrappy/HeyListen/releases/latest", mem_sink, &m, 0, L"application/vnd.github+json") && m.p) {
+        const char *k = strstr(m.p, "\"tag_name\"");
+        if (k && json_string_after(k + 10, m.p + m.n, look->tag, (int)sizeof look->tag)) look->ok = safe_tag(look->tag);
+    }
+    free(m.p);
+    return 0;
+}
+
+static void play_write_skip(const wchar_t *folder, const char *tag) {
+    wchar_t dir[MAX_PATH], path[MAX_PATH + 40];
+    char line[160];
+    swprintf(dir, MAX_PATH, L"%ls\\user", folder);
+    CreateDirectoryW(dir, NULL);
+    swprintf(path, MAX_PATH + 40, L"%ls\\hookshot_update_skip.txt", dir);
+    snprintf(line, sizeof line, "skip=%s\n", tag);
+    write_small(path, line);
+}
+
+/* ("never ask again": update_check=0 in the game folder's options file, the line the game's own offer and its Settings row keep) */
+static void play_write_never(const wchar_t *folder) {
+    static char ini[1 << 16], out[(1 << 16) + 32];
+    wchar_t path[MAX_PATH + 40], tmp[MAX_PATH + 48];
+    swprintf(path, MAX_PATH + 40, L"%ls\\hookshot_options.ini", folder);
+    play_read(path, ini, sizeof ini);
+    if (!ini_with_update_check(ini, 0, out, sizeof out)) return;
+    swprintf(tmp, MAX_PATH + 48, L"%ls.tmp", path);
+    HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD wrote = 0;
+    const DWORD len = (DWORD)strlen(out);
+    const BOOL ok = WriteFile(f, out, len, &wrote, NULL) && wrote == len;
+    CloseHandle(f);
+    if (!ok || !MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp);
+}
+
+/* the question about a newer release: 1 to start the game, 0 not to (the page is opened instead) */
+static int play_ask(const wchar_t *folder, const char *tag, const char *have) {
+    wchar_t wtag[128], whave[128], text[1400];
+    w(tag, wtag, 128), w(have, whave, 128);
+    swprintf(text, 1400,
+             L"A new version of HeyListen is out: %ls (this game is %ls).\n\n"
+             L"RecompLauncher installs it: update HeyListen there, and set it up again if it asks. Your saves stay.\n\n"
+             L"Yes: play my version now\nNo: open the download page (the game does not start)\nCancel: play, and stop asking...",
+             wtag, whave);
+    if (play_quiet()) return 1;
+    const int a = MessageBoxW(NULL, text, L"HeyListen update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+    if (a == IDNO) {
+        ShellExecuteW(NULL, L"open", L"https://github.com/Sacrappy/HeyListen/releases/latest", NULL, NULL, SW_SHOWNORMAL);
+        return 0;
+    }
+    if (a == IDCANCEL) {
+        swprintf(text, 1400,
+                 L"Keep your version, and stop asking.\n\n"
+                 L"Yes: skip only %ls (you are asked again when the next version is out)\n"
+                 L"No: never ask again (turn it back on in the game menu: Settings, Check for updates)\n"
+                 L"Cancel: ask again next time",
+                 wtag);
+        const int b = MessageBoxW(NULL, text, L"HeyListen update", MB_YESNOCANCEL | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);
+        if (b == IDYES) play_write_skip(folder, tag);
+        else if (b == IDNO) play_write_never(folder);
+    }
+    return 1;
+}
+
+static int play_folder(const wchar_t *args) {
+    wchar_t folder[MAX_PATH], exe[MAX_PATH + 32], path[MAX_PATH + 64], msg[MAX_PATH + 400];
+    while (*args == L' ') args++;
+    const int quoted = *args == L'"';
+    size_t k = 0;
+    for (args += quoted; *args && !(quoted ? *args == L'"' : *args == L' ') && k + 1 < MAX_PATH; ) folder[k++] = *args++;
+    folder[k] = 0;
+    while (k > 1 && (folder[k - 1] == L'\\' || folder[k - 1] == L'/')) folder[--k] = 0;
+    if (!k) {
+        play_error(L"No game folder was given. Set the game up in RecompLauncher first (Play passes it the folder).");
+        return 1;
+    }
+    if (GetFileAttributesW(folder) == INVALID_FILE_ATTRIBUTES) {
+        swprintf(msg, MAX_PATH + 400, L"The game folder does not exist: %ls\nSet HeyListen up again in RecompLauncher to build it from your copy of the game.", folder);
+        play_error(msg);
+        return 1;
+    }
+    swprintf(exe, MAX_PATH + 32, L"%ls\\bin\\HeyListen.exe", folder);
+    if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES) swprintf(exe, MAX_PATH + 32, L"%ls\\bin\\hookshot.exe", folder);   /* (a folder built before the rename) */
+    if (GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES) {
+        swprintf(msg, MAX_PATH + 400, L"No built game in %ls (bin\\HeyListen.exe is missing). Set HeyListen up in RecompLauncher to build it from your copy of the game.", folder);
+        play_error(msg);
+        return 1;
+    }
+    swprintf(path, MAX_PATH + 64, L"%ls\\image.bin", folder);
+    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) {
+        swprintf(msg, MAX_PATH + 400, L"The game in %ls was not built completely (image.bin is missing). Set HeyListen up again in RecompLauncher.", folder);
+        play_error(msg);
+        return 1;
+    }
+    {   /* (a newer release? not when the launcher's environment or the player's options say no; nothing, and no wait, when offline) */
+        static char ini[1 << 16], ver[1024];
+        char have[128], skipped[128] = "";
+        const char *off = getenv("HOOKSHOT_NO_UPDATE_CHECK");
+        swprintf(path, MAX_PATH + 64, L"%ls\\hookshot_options.ini", folder);
+        play_read(path, ini, sizeof ini);
+        swprintf(path, MAX_PATH + 64, L"%ls\\hookshot_version.txt", folder);
+        play_read(path, ver, sizeof ver);
+        if (!(off && strcmp(off, "0")) && !ini_update_off(ini) && play_value(ver, "version", have, sizeof have) && safe_tag(have)) {
+            static PlayLook look;
+            HANDLE t = CreateThread(NULL, 0, play_look, &look, 0, NULL);
+            int got = 0;
+            if (t) got = WaitForSingleObject(t, 4500) == WAIT_OBJECT_0 && look.ok, CloseHandle(t);   /* (a look still running is left behind) */
+            if (got) {
+                char skip[1024];
+                swprintf(path, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", folder);
+                play_read(path, skip, sizeof skip);
+                if (play_value(skip, "skip", skipped, sizeof skipped) && !strcmp(skipped, look.tag)) got = 0;
+            }
+            if (got && ver_newer(look.tag, have) && !play_ask(folder, look.tag, have)) return 0;
+        }
+    }
+    /* (the question was asked here, or turned off: the game does not ask again) */
+    _wputenv_s(L"HOOKSHOT_NO_UPDATE_CHECK", L"1");
+    wchar_t cmd[MAX_PATH + 40];
+    swprintf(cmd, MAX_PATH + 40, L"\"%ls\"", exe);
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi;
+    DWORD code = 1;
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, folder, &si, &pi)) {
+        swprintf(msg, MAX_PATH + 400, L"The game could not be started (%ls, Windows error %lu).", exe, GetLastError());
+        play_error(msg);
+        return 1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE), GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+    return (int)code;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     (void)prev;
     /* (libraries loaded from here on come from System32 only, never from the folder the setup was downloaded to) */
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
     wcsncpy(g_cmdline, cmdline ? cmdline : L"", 2047);
+    {   /* (RecompLauncher's Play: --play <game folder>, before any window, download or install) */
+        const wchar_t *c = g_cmdline;
+        while (*c == L' ') c++;
+        if (!wcsncmp(c, L"--play", 6) && (c[6] == L' ' || !c[6])) return play_folder(c + 6);
+    }
     {
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(NULL, self, MAX_PATH);

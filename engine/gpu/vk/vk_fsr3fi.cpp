@@ -21,6 +21,8 @@
 
 #include "vk_fsr3fi.h"
 #include "vk_tune.h"   // (better-aa: live A/B switches)
+#include "vk_framegen.h"   // (framegen_now: the Frame generation row as it runs)
+#include "framegen_rows.h"   // (better-aa: BY_FSR3)
 #include "vk_menu.h"    // (the Frame generation row)
 #include "vk_gprof.h"   // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_texture.h"
@@ -373,9 +375,9 @@ void flush_mapped_range(VmaAllocation memory, uint64_t offset, uint64_t size) { 
 constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS,
                                              0, 1};
 
-/// The made frames of Frame generation by this backend: at FSR 3.1 FG on the Frame generation by row (the default where DLSS
-/// FG cannot run) all of them, and at DLSS FG where NVIDIA DLSS Frame Generation does not make them (vk_framegen.cpp asks it
-/// first: Frame generation's Auto), at any multiplier. Built-in FG on the row: the renderer's own blend. RX_VK_FSR_FG=1 asks for it over the row, =0 never.
+/// The made frames of Frame generation by this backend: with AMD FSR 3.1 on the Frame generation by row (better-aa) all of
+/// them, at any multiplier and at Auto; with the renderer's own, or DLSS FG where NVIDIA DLSS Frame Generation makes none
+/// (vk_framegen.cpp asks it first), the 2x midpoint, the rest the renderer's own blend. RX_VK_FSR_FG=1 asks for it over the row, =0 never.
 /// It was opt-in (RX_VK_FSR_FG=1, 2x only) while it moved the HUD with the scene, as this game draws its HUD into the same
 /// picture and has no HUD-less colour: smeared HUD, a ghost trail behind Link, a see-through rectangle (#1635 and seven
 /// duplicates, 2026-11-10). The patched passes keep it where it is (kKeepStatic; RX_VK_FSR_FG_HUD=0: AMD's as they were).
@@ -387,8 +389,9 @@ uint32_t asked() {
     if (env >= 0) return env ? 1u : 0u;
     // (better-aa: RX_VK_TUNE's fsr_fg=0 / 1 over the row, live, for an A/B against the built-in blend)
     if (const int t = tune_int("fsr_fg", -1); t >= 0) return t ? 1u : 0u;
-    // (DLSS FG on the row: where DLSS-G makes none; FSR 3.1 FG: all of them; Built-in FG: the renderer's own)
-    return opts.framegen >= 1 && opts.framegen_by != 1 ? 1u : 0u;   // (better-aa: the row is 0 AMD FSR 3.1, 1 Built-in)
+    // (better-aa) AMD FSR 3.1 on the Frame generation by row: every made frame, at any multiplier and at Auto
+    if (opts.framegen_by == framegen_rows::BY_FSR3) return framegen_now() >= 1 ? 1u : 0u;
+    return framegen_now() == 2 ? 1u : 0u;   // (as it runs: the renderer's own and DLSS FG's fallback, the 2x midpoint)
 }
 
 /// kKeepStatic, unless RX_VK_FSR_FG_HUD=0 (AMD's passes, the HUD moved with the scene: for an A/B)
