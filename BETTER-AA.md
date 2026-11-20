@@ -80,6 +80,14 @@ back end without a rebuild.
   each, the picture the same). On by default on RADV in stages that write no storage memory (`RX_VK_FOLLOW_FIRST=0`:
   off, `=2`: every stage, 12.8 ms but no higher frame rate). It is part of the program cache's stamp, so a change of
   it translates the shaders again.
+- **No shared lock on every buffer binding (+8.7% where the replay is the frame).** Each buffer binding of each draw is
+  checked against the capture's left-out ranges (`RX_VK_CAP_ONLY_GPU`, a count of reads that should never happen), and the
+  check took one mutex: the five segment workers queued on it, ~10% of their time (perf with LBR call stacks). Each thread
+  now checks its own copy of the ranges, taken again when a generation counter moves (`vk_memory.cpp cap_excl_hit`). Kokiri
+  at 720p (the game's upscaler, the GPU 7.7 ms): 78.0 -> 84.8 fps, the segments' recording 7.5 -> 5.0 ms a frame, a draw's
+  recording 7.9 -> 5.1 us. At 1440p Native AA the GPU is the frame (~12 ms busy of 13.3) and the frame rate stays.
+  Not faster on top of it: `HL_PROG_MEMO=1`, `HL_UBO_WRITER=1` (both checked: 0 mismatches), a cache of the last gap
+  between left-out ranges.
 - **Turn on Resizable BAR (+17%; a firmware setting, not code).** Without it the CPU sees 256 MB of VRAM, and RADV keeps
   every buffer resident: that window sat full, and each kernel submit (`DRM_IOCTL_AMDGPU_CS`, ~30 a frame) spent up to
   0.5-2 ms in amdgpu's range-limited VRAM allocator, which kept Mesa's submit thread 42% busy while the GPU waited for work.
