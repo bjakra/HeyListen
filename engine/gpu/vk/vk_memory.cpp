@@ -1252,6 +1252,7 @@ int cap_only_gpu() {
 std::vector<std::pair<uint64_t, uint64_t>> all_pool_ranges;   // (every game pool below 1 TB, merged; cap_ranges_mu)
 std::mutex cap_excl_mu;
 std::vector<std::pair<uint64_t, uint64_t>> cap_excl;          // (the import ranges outside every pool and texture storage)
+std::atomic<uint64_t> cap_excl_gen{0};   // (bumped with cap_excl_mu held at each change of cap_excl: cap_excl_hit's copies)
 std::atomic<int64_t> st_excl_pages{0}, st_excl_reads{0}, st_cap_pages{0}, st_cap_presents{0}, st_cap_takes{0};
 std::vector<std::pair<uint64_t, uint64_t>> ranges_merged(std::vector<std::pair<uint64_t, uint64_t>> v) {
     std::sort(v.begin(), v.end());
@@ -1525,6 +1526,7 @@ std::vector<std::pair<uint64_t, uint64_t>> capture_union_locked() {
         {
             std::lock_guard lk(cap_excl_mu);
             cap_excl.swap(excl);
+            cap_excl_gen.fetch_add(1, std::memory_order_release);
         }
         if (cap_only_gpu() == 1) imp = ranges_clip(imp, gpu, true);
     }
@@ -1539,9 +1541,18 @@ bool ranges_hit(const std::vector<std::pair<uint64_t, uint64_t>>& v, uint64_t lo
     return it != v.end() && it->first < hi;
 }
 /// (RX_VK_CAP_ONLY_GPU) whether [lo, hi) of guest memory reaches into the left-out ranges
+// (better-aa) Against the thread's own copy, taken again only when the ranges change: every buffer binding of every draw
+// comes here (cap_excl_note), and with one mutex for all the segment workers it was ~10% of their time (perf, i5-12600KF).
+// Kokiri at 720p, where the replay is the frame: 78.0 -> 83.9 fps; the parallel segments 7.5 -> 5.0 ms a frame
 bool cap_excl_hit(uint64_t lo, uint64_t hi) {
-    std::lock_guard lk(cap_excl_mu);
-    return ranges_hit(cap_excl, lo, hi);
+    static thread_local std::vector<std::pair<uint64_t, uint64_t>> copy;
+    static thread_local uint64_t seen = ~0ull;
+    if (cap_excl_gen.load(std::memory_order_acquire) != seen) {
+        std::lock_guard lk(cap_excl_mu);
+        copy = cap_excl;
+        seen = cap_excl_gen.load(std::memory_order_relaxed);
+    }
+    return ranges_hit(copy, lo, hi);
 }
 /// (2026-11-14) a pool just made, [lo, hi): one of the pools at once, and out of the left-out ranges at once, so no binding
 /// of it can come before (the play session's reads into left-out ranges came after zone changes: pools made since the last
@@ -1564,6 +1575,7 @@ void cap_pool_born_now(uint64_t gpu, uint64_t size) {
         std::lock_guard lk(cap_ranges_mu);
         std::lock_guard ek(cap_excl_mu);
         cap_pool_born(all_pool_ranges, cap_excl, gpu, gpu + size);
+        cap_excl_gen.fetch_add(1, std::memory_order_release);
         cap_ranges_ver++;
     }
     if (cap_only_gpu() == 1) {
