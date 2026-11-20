@@ -6,8 +6,8 @@
 // particle state) and by the CPU (a batch per cut, in pages of its own): the first cut's batch pages were synced from guest
 // memory, the state pages stayed left out in the mirror and reverted with it - the leaves at the first cut's place.
 //
-// RX_VK_WB_POOL_EAGER (on by default; =0: only the written page, as before): the first CPU write to a page of the pool makes
-// the whole pool eager.
+// RX_VK_WB_POOL_EAGER (better-aa: off by default, =1 on; off: only the written page, as before): the first CPU write to a page
+// of the pool makes the whole pool eager. better-aa keeps the cut grass right with RX_VK_WB_SMALL_EAGER_KB's 128 KB alone.
 #pragma once
 
 namespace wb_pool_eager {

@@ -4428,6 +4428,7 @@ struct NvnPool {
     uint64_t made_ns = 0;    // (host->now_ns() when the game made it)
     bool eager = false, skipped = false;
     uint8_t why = 0;   // (eager: 1 read by the CPU, 2 written by it)
+    int64_t log_left = 0, log_small = 0;   // (better-aa, RX_VK_WB_POOL_LOG: bytes left out, and kept by the small-pool rule, since the last log)
 };
 std::mutex nvn_pools_mu;   // (after pools_mu when both)
 std::map<uint64_t, NvnPool> nvn_pools;   // by guest lo
@@ -4442,12 +4443,12 @@ bool wb_lazy_on() {
     static const bool v = !getenv("RX_VK_WB_EAGER") || getenv("RX_VK_WB_EAGER")[0] == '0';
     return v;
 }
-// (issue 50, RX_VK_WB_POOL_EAGER, on by default; =0 off) The comment above says a CPU write makes the whole game pool eager for
+// (issue 50, RX_VK_WB_POOL_EAGER, better-aa: off by default; =1 on) The comment above says a CPU write makes the whole game pool eager for
 // good, but the code only wrote that page back: a pool whose GPU words are left out (a particle effect's state, issue 50's cut
 // grass) and whose other pages the CPU writes later (a batch appended on each cut) had the CPU's page copied from guest memory
 // over the GPU's words in the mirror, the effect's state back at its first values: debris drawn at the first cut's place,
 // batches piling up. Now the first CPU write to a page of a game pool makes the pool eager, as the comment says.
-// (issue 50, RX_VK_WB_SMALL_EAGER_KB, default 4096; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the
+// (issue 50, RX_VK_WB_SMALL_EAGER_KB, better-aa: default 128; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the
 // 69 MB a frame of Hyrule Field). A small pool both sides write (the cut-grass debris' state in pools of 8 KB, a vegetation's
 // culling counts) lost its GPU words the first time the CPU wrote a page of it: the sync copied the page from guest memory over
 // them, the effect's state at its first values (leaves at the first cut's place), the counts at zero (every plant gone for a few
@@ -4455,12 +4456,25 @@ bool wb_lazy_on() {
 uint64_t wb_small_eager_bytes() {
     static const uint64_t v = [] {
         const char* e = getenv("RX_VK_WB_SMALL_EAGER_KB");
-        return (e ? (uint64_t)strtoull(e, nullptr, 10) : 4096ull) << 10;
+        return (e ? (uint64_t)strtoull(e, nullptr, 10) : 128ull) << 10;   // (better-aa: 128, see wb_pool_eager_on)
     }();
     return v;
 }
+// (better-aa) The defaults, measured on an RX 6800 (Kokiri, 1440p, AMD FSR 4 Native AA): upstream's 4096 KB and the pool rule
+// on copied ~1.9 MB a submission more back to guest memory than before (0.78 ms of GPU write-backs, was 0.28): 71.6 fps against
+// 73.7 without either. Only the cut-grass effect's own pools need it: its debris state in two 8 KB pools, its per-frame data in
+// two of 120 KB beside them (RX_VK_WB_POOL_LOG lists them); with 64 KB the leaves were still missing, with 128 KB and the pool
+// rule off they fly and vanish as with upstream's defaults, at 73.5 fps (GPU 10.9 ms). The pools of 0.6 to 2.2 MB the 4096 KB
+// limit also took in are what cost the time. So: 128 KB and the pool rule off by default; RX_VK_WB_SMALL_EAGER_KB=4096
+// RX_VK_WB_POOL_EAGER=1 is upstream's.
 bool wb_pool_eager_on() {
-    static const bool v = !getenv("RX_VK_WB_POOL_EAGER") || atoi(getenv("RX_VK_WB_POOL_EAGER")) != 0;
+    static const bool v = getenv("RX_VK_WB_POOL_EAGER") && atoi(getenv("RX_VK_WB_POOL_EAGER")) != 0;
+    return v;
+}
+// (better-aa, RX_VK_WB_POOL_LOG=1, diagnostic) every 600 submissions, the game pools whose write-backs were left out or kept by
+// the small-pool rule (RX_VK_WB_SMALL_EAGER_KB), with their size and flags: which pools the rules are about
+bool wb_pool_log_on() {
+    static const bool v = getenv("RX_VK_WB_POOL_LOG") && atoi(getenv("RX_VK_WB_POOL_LOG")) != 0;
     return v;
 }
 NvnPool* nvn_pool_at(uint64_t g, uint64_t* lo) {   // (nvn_pools_mu held)
@@ -4610,6 +4624,7 @@ void lazy_filter(Pool& p, std::vector<VkBufferCopy>& runs) {
                 // (CPU_NO_ACCESS 0x1 or CPU_CACHED 0x4, not CPU_UNCACHED 0x2)
                 const bool may_defer = (np->flags & (0x1u | 0x4u)) &&
                                       !(np->flags & 0x2u) && wb_pool_eager::may_defer_size(np->hi - lo, wb_small_eager_bytes());   // (issue 50: not a small pool)
+                if (!np->eager && !may_defer && (np->flags & (0x1u | 0x4u)) && !(np->flags & 0x2u)) np->log_small += (int64_t)(seg_end - g);
                 if (!np->eager && may_defer) {
                     if (!np->first_wb) np->first_wb = mirror_epoch + 1;
                     why = mirror_epoch + 1 - np->first_wb < kLazyWarm ? 4 : 5;
@@ -4637,6 +4652,7 @@ void lazy_filter(Pool& p, std::vector<VkBufferCopy>& runs) {
                 else out.push_back({a, a, seg_end - g});
             } else {
                 st_lazy_bytes += (int64_t)(seg_end - g);
+                if (NvnPool* lp = nvn_pool_at(g, nullptr)) lp->log_left += (int64_t)(g < seg_end ? seg_end - g : 0);
                 p.lazy_held = true;
             }
             g = seg_end;
@@ -7537,6 +7553,21 @@ void memory_end_submission(VkCommandBuffer cmd) {
                      st_kept_by[1] / 600.0 / 1048576, st_kept_by[2] / 600.0 / 1048576, st_kept_by[3] / 600.0 / 1048576,
                      st_kept_by[4] / 600.0 / 1048576, st_kept_by[5] / 600.0 / 1048576);
                 for (int64_t& k : st_kept_by) k = 0;
+                if (wb_pool_log_on()) {
+                    std::lock_guard plk(nvn_pools_mu);
+                    std::vector<std::pair<int64_t, std::map<uint64_t, NvnPool>::iterator>> top;
+                    for (auto it = nvn_pools.begin(); it != nvn_pools.end(); ++it)
+                        if (it->second.log_left || it->second.log_small) top.push_back({it->second.log_left + it->second.log_small, it});
+                    std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                    logf("vk: write-back pools (RX_VK_WB_POOL_LOG, 600 submits): %zu pools; KB a submit left out / kept as small:", top.size());
+                    for (size_t i = 0; i < top.size() && i < 60; i++) {
+                        const NvnPool& np = top[i].second->second;
+                        logf("vk:   pool %#llx +%llu KB flags %#x: left out %.1f, small %.1f%s", (unsigned long long)top[i].second->first,
+                             (unsigned long long)((np.hi - top[i].second->first) >> 10), np.flags, np.log_left / 600.0 / 1024,
+                             np.log_small / 600.0 / 1024, np.eager ? (np.why == 1 ? " (eager: read)" : " (eager: written)") : "");
+                    }
+                    for (auto& [lo, np] : nvn_pools) np.log_left = np.log_small = 0;
+                }
             }
         }
     }

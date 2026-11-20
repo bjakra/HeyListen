@@ -32,6 +32,11 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
 
   FSR 3.1 now makes the frames at any multiplier (2x to 8x) and at Auto, each at its own time between two game frames
   (upstream's *Frame generation by* row offers AMD FSR 3.1 at 2x only).
+- **Upstream's cut-grass fix without its cost.** v0.4.3 fixes the missing cut-grass leaves (issue 50) by always copying
+  back every game pool under 4 MB and every pool the CPU writes. On an RX 6800 that cost 0.5 ms of GPU a frame (74.1 ->
+  71.6 fps at 1440p). Only the grass effect's own pools need it (8 KB and 120 KB ones, found with `RX_VK_WB_POOL_LOG=1`), so
+  the limit here is 128 KB and the CPU-write rule is off (`RX_VK_WB_SMALL_EAGER_KB=4096 RX_VK_WB_POOL_EAGER=1` is
+  upstream's): the leaves fly as with upstream's fix, at the old frame rate.
 - **The right scene depth for motion vectors.** The game has no motion vectors: the renderer makes them from the scene's
   depth and camera. Some places draw the picture with two depth buffers (the Kokiri Sword's crawl tunnel, parts of the
   forest): the game goes on to a second depth partway through the frame, and only that one lines up with the picture.

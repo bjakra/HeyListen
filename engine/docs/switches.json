@@ -2,7 +2,7 @@
  "schema": 1,
  "generated_by": "engine/scripts/list_switches.py",
  "scope": "C, C++ and headers under engine/ (engine/tests and vendored trees other than a64-kit excluded) and the Python the builder, the lifter and the scripts run: getenv, std::getenv, _wgetenv, the code's own env helpers and table-driven reads, and os.environ.",
- "count": 1327,
+ "count": 1328,
  "switches": [
   {
    "name": "A64_DEVIRT",
@@ -5397,7 +5397,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4755
+     "line": 4771
     },
     {
      "path": "host/hos_main.c",
@@ -5422,7 +5422,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4754
+     "line": 4770
     },
     {
      "path": "host/mkw_glue.c",
@@ -5431,7 +5431,7 @@
    ],
    "default": "unset",
    "values": "text",
-   "explanation": "undocumented: gpu/vk/vk_memory.cpp:4754 (in `noaccess_ram_on()`) reads it as a text value: `const char* lazy = getenv(\"HOS_LAZY_COMMIT\");`. No comment in the source says what it changes.",
+   "explanation": "undocumented: gpu/vk/vk_memory.cpp:4770 (in `noaccess_ram_on()`) reads it as a text value: `const char* lazy = getenv(\"HOS_LAZY_COMMIT\");`. No comment in the source says what it changes.",
    "comment": null,
    "documented_in": null,
    "source": "undocumented",
@@ -5950,7 +5950,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4753
+     "line": 4769
     },
     {
      "path": "host/hos_memsplit.c",
@@ -14223,7 +14223,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4892
+     "line": 4908
     }
    ],
    "default": "off (unset)",
@@ -14462,7 +14462,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5178
+     "line": 5194
     },
     {
      "path": "gpu/vk/vk_replay.cpp",
@@ -14487,7 +14487,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6000
+     "line": 6016
     }
    ],
    "default": "0 (unset)",
@@ -14936,7 +14936,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5799
+     "line": 5815
     }
    ],
    "default": "off (unset)",
@@ -15191,7 +15191,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5176
+     "line": 5192
     }
    ],
    "default": "unset",
@@ -18229,7 +18229,7 @@
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5665
+     "line": 5681
     }
    ],
    "default": "off (unset)",
@@ -19499,7 +19499,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6556
+     "line": 6572
     }
    ],
    "default": "unset",
@@ -19520,11 +19520,11 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6563
+     "line": 6579
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6566
+     "line": 6582
     }
    ],
    "default": "75",
@@ -19566,7 +19566,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6952
+     "line": 6968
     }
    ],
    "default": "off (unset)",
@@ -19700,7 +19700,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6492
+     "line": 6508
     }
    ],
    "default": "off (unset)",
@@ -19742,11 +19742,11 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6290
+     "line": 6306
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6293
+     "line": 6309
     }
    ],
    "default": "unset",
@@ -20052,11 +20052,11 @@
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6132
+     "line": 6148
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6888
+     "line": 6904
     }
    ],
    "default": "off (unset)",
@@ -20337,7 +20337,7 @@
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6978
+     "line": 6994
     }
    ],
    "default": "off (unset)",
@@ -20379,7 +20379,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5457
+     "line": 5473
     }
    ],
    "default": "unset",
@@ -20534,7 +20534,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4515
+     "line": 4529
     }
    ],
    "default": "off (unset)",
@@ -20874,7 +20874,7 @@
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 7639
+     "line": 7670
     }
    ],
    "default": "off (unset)",
@@ -21373,7 +21373,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6032
+     "line": 6048
     }
    ],
    "default": "off (unset)",
@@ -21394,7 +21394,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6444
+     "line": 6460
     }
    ],
    "default": "off (unset)",
@@ -21440,7 +21440,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6105
+     "line": 6121
     }
    ],
    "default": "unset",
@@ -21461,7 +21461,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6857
+     "line": 6873
     }
    ],
    "default": "off (unset)",
@@ -21482,7 +21482,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6460
+     "line": 6476
     }
    ],
    "default": "unset",
@@ -21696,7 +21696,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5154
+     "line": 5170
     }
    ],
    "default": "unset",
@@ -21717,7 +21717,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5186
+     "line": 5202
     }
    ],
    "default": "1",
@@ -21738,7 +21738,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5251
+     "line": 5267
     },
     {
      "path": "host/hos_main.c",
@@ -21763,7 +21763,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4961
+     "line": 4977
     }
    ],
    "default": "on (unless set to 0, false, off or no)",
@@ -21784,7 +21784,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5190
+     "line": 5206
     }
    ],
    "default": "off (unset)",
@@ -22420,7 +22420,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6343
+     "line": 6359
     }
    ],
    "default": "unset",
@@ -22462,7 +22462,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4911
+     "line": 4927
     }
    ],
    "default": "off (unset)",
@@ -22697,7 +22697,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6798
+     "line": 6814
     }
    ],
    "default": "off (unset)",
@@ -22789,7 +22789,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5623
+     "line": 5639
     }
    ],
    "default": "off (unset)",
@@ -23023,7 +23023,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 7543
+     "line": 7574
     }
    ],
    "default": "off (unset)",
@@ -24062,20 +24062,20 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5882
+     "line": 5898
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5900
+     "line": 5916
     },
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5913
+     "line": 5929
     }
    ],
    "default": "off (unset)",
    "values": "on or off (0, false, off, no and empty are off)",
-   "explanation": "undocumented: gpu/vk/vk_memory.cpp:5882 (in `guest_span_cached()`) reads it as an on/off switch: `static const bool imported_only = getenv(\"RX_VK_POOL_END_IMPORTED\") != nullptr;`. No comment in the source says what it changes.",
+   "explanation": "undocumented: gpu/vk/vk_memory.cpp:5898 (in `guest_span_cached()`) reads it as an on/off switch: `static const bool imported_only = getenv(\"RX_VK_POOL_END_IMPORTED\") != nullptr;`. No comment in the source says what it changes.",
    "comment": null,
    "documented_in": null,
    "source": "undocumented",
@@ -24091,7 +24091,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6674
+     "line": 6690
     }
    ],
    "default": "unset",
@@ -24133,7 +24133,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6167
+     "line": 6183
     }
    ],
    "default": "unset",
@@ -24154,7 +24154,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 8154
+     "line": 8185
     }
    ],
    "default": "on (unless set to 0, false, off or no)",
@@ -24628,7 +24628,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5240
+     "line": 5256
     }
    ],
    "default": "off (unset)",
@@ -25076,7 +25076,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5607
+     "line": 5623
     },
     {
      "path": "gpu/vk/vk_temporal.cpp",
@@ -25126,7 +25126,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5588
+     "line": 5604
     }
    ],
    "default": "off (unset)",
@@ -25147,7 +25147,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 5664
+     "line": 5680
     }
    ],
    "default": "off (unset)",
@@ -25520,7 +25520,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4856
+     "line": 4872
     }
    ],
    "default": "on (unless set to 0, false, off or no)",
@@ -28440,7 +28440,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 7086
+     "line": 7102
     }
    ],
    "default": "on (unless set to 0, false, off or no)",
@@ -28461,7 +28461,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4442
+     "line": 4443
     }
    ],
    "default": "on (unless set to 0, false, off or no)",
@@ -28482,7 +28482,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 6080
+     "line": 6096
     }
    ],
    "default": "unset",
@@ -28503,13 +28503,34 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4463
+     "line": 4471
     }
    ],
-   "default": "on (unless set to 0, false, off or no)",
-   "values": "on or off (0, false, off, no and empty are off); the description names `0`",
-   "explanation": "(Issue 50, RX_VK_WB_POOL_EAGER, on by default; =0 off) The comment above says a CPU write makes the whole game pool eager for good, but the code only wrote that page back: a pool whose GPU words are left out (a particle effect's state, issue 50's cut grass) and whose other pages the CPU writes later (a batch appended on each cut) had the CPU's page copied from guest memory over the GPU's words in the mirror, the effect's state back at its first values: debris drawn at the first cut's place, batches piling up. Now the first CPU write to a page of a game pool makes the pool eager, as the comment says.",
-   "comment": "(Issue 50, RX_VK_WB_POOL_EAGER, on by default; =0 off) The comment above says a CPU write makes the whole game pool eager for good, but the code only wrote that page back: a pool whose GPU words are left out (a particle effect's state, issue 50's cut grass) and whose other pages the CPU writes later (a batch appended on each cut) had the CPU's page copied from guest memory over the GPU's words in the mirror, the effect's state back at its first values: debris drawn at the first cut's place, batches piling up. Now the first CPU write to a page of a game pool makes the pool eager, as the comment says.",
+   "default": "off (unset)",
+   "values": "on or off (0, false, off, no and empty are off); the description names `0`, `1`",
+   "explanation": "The pools of 0.6 to 2.2 MB the 4096 KB limit also took in are what cost the time. So: 128 KB and the pool rule off by default; RX_VK_WB_SMALL_EAGER_KB=4096 RX_VK_WB_POOL_EAGER=1 is upstream's.",
+   "comment": "The pools of 0.6 to 2.2 MB the 4096 KB limit also took in are what cost the time. So: 128 KB and the pool rule off by default; RX_VK_WB_SMALL_EAGER_KB=4096 RX_VK_WB_POOL_EAGER=1 is upstream's.",
+   "documented_in": null,
+   "source": "comment at gpu/vk/vk_memory.cpp",
+   "documented": true,
+   "set_via": "In `hookshot_env.txt`, or in the environment.",
+   "use": null
+  },
+  {
+   "name": "RX_VK_WB_POOL_LOG",
+   "area": "logging",
+   "group": "Logs and traces",
+   "audience": "diagnostic",
+   "files": [
+    {
+     "path": "gpu/vk/vk_memory.cpp",
+     "line": 4477
+    }
+   ],
+   "default": "off (unset)",
+   "values": "on or off (0, false, off, no and empty are off); the description names `0`, `1`",
+   "explanation": "(Better-aa, RX_VK_WB_POOL_LOG=1, diagnostic) every 600 submissions, the game pools whose write-backs were left out or kept by the small-pool rule (RX_VK_WB_SMALL_EAGER_KB), with their size and flags: which pools the rules are about.",
+   "comment": "(Better-aa, RX_VK_WB_POOL_LOG=1, diagnostic) every 600 submissions, the game pools whose write-backs were left out or kept by the small-pool rule (RX_VK_WB_SMALL_EAGER_KB), with their size and flags: which pools the rules are about.",
    "documented_in": null,
    "source": "comment at gpu/vk/vk_memory.cpp",
    "documented": true,
@@ -28524,7 +28545,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4793
+     "line": 4809
     }
    ],
    "default": "off (unset)",
@@ -28545,7 +28566,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 7104
+     "line": 7120
     }
    ],
    "default": "0 (unset)",
@@ -28566,13 +28587,13 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 4457
+     "line": 4458
     }
    ],
    "default": "unset",
    "values": "text",
-   "explanation": "Now the first CPU write to a page of a game pool makes the pool eager, as the comment says. (issue 50, RX_VK_WB_SMALL_EAGER_KB, default 4096; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the 69 MB a frame of Hyrule Field). A small pool both sides write (the cut-grass debris' state in pools of 8 KB, a vegetation's culling counts) lost its GPU words the first time the CPU wrote a page of it: the sync copied the page from guest memory over them, the effect's state at its first values (leaves at the first cut's place), the counts at zero (every plant gone for a few frames after a cut).",
-   "comment": "Now the first CPU write to a page of a game pool makes the pool eager, as the comment says. (issue 50, RX_VK_WB_SMALL_EAGER_KB, default 4096; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the 69 MB a frame of Hyrule Field). A small pool both sides write (the cut-grass debris' state in pools of 8 KB, a vegetation's culling counts) lost its GPU words the first time the CPU wrote a page of it: the sync copied the page from guest memory over them, the effect's state at its first values (leaves at the first cut's place), the counts at zero (every plant gone for a few frames after a cut).",
+   "explanation": "Now the first CPU write to a page of a game pool makes the pool eager, as the comment says. (issue 50, RX_VK_WB_SMALL_EAGER_KB, better-aa: default 128; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the 69 MB a frame of Hyrule Field). A small pool both sides write (the cut-grass debris' state in pools of 8 KB, a vegetation's culling counts) lost its GPU words the first time the CPU wrote a page of it: the sync copied the page from guest memory over them, the effect's state at its first values (leaves at the first cut's place), the counts at zero (every plant gone for a few frames after a cut).",
+   "comment": "Now the first CPU write to a page of a game pool makes the pool eager, as the comment says. (issue 50, RX_VK_WB_SMALL_EAGER_KB, better-aa: default 128; 0 off) Leaving a pool's GPU writes in the mirror pays only for big pools (the 69 MB a frame of Hyrule Field). A small pool both sides write (the cut-grass debris' state in pools of 8 KB, a vegetation's culling counts) lost its GPU words the first time the CPU wrote a page of it: the sync copied the page from guest memory over them, the effect's state at its first values (leaves at the first cut's place), the counts at zero (every plant gone for a few frames after a cut).",
    "documented_in": null,
    "source": "comment at gpu/vk/vk_memory.cpp",
    "documented": true,
@@ -28633,7 +28654,7 @@
    "files": [
     {
      "path": "gpu/vk/vk_memory.cpp",
-     "line": 7296
+     "line": 7312
     }
    ],
    "default": "unset",
