@@ -1478,7 +1478,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         // =1: only in a stage that writes no storage memory; =2: in every stage. A load through the table and a store through a
         // buffer may be the same memory: Mesa's NIR tracks global and storage buffer accesses together (nir_deref.c,
         // nir_opt_load_store_vectorize.c: they may alias unless both are restrict, and nothing here is) and ACO orders both as
-        // buffer memory, and no binding here is Restrict or NonWritable. Other drivers' compilers not looked at. RADV's default is 1
+        // buffer memory, and no binding here is Restrict or NonWritable. Other drivers' compilers not looked at. RADV's default was 1
         // (mma_layout.h follow_first); Kokiri at 1440p: GPU 13.5 -> 13.1 ms a frame, 60.3 -> 61.4 fps over four runs each, the
         // picture the same. =2 measured 12.8 ms, the frame rate no higher (the frame waits on the recording, not on the GPU)
         const int ff_level{Shader::Backend::SPIRV::follow_first};
@@ -1489,8 +1489,21 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             AddLabel();
             guest_lookup(addr, 1U << shift, [&](Id target) { OpReturnValue(psb_load(type, target, 4U)); });
         }
-        define_body(ssbo_member, addr, element_pointer, shift,
-                    [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); }, !table_first);
+        // (=3, RADV's default: in every stage, and no search after the table: an address it does not map goes to the miss log,
+        // RX_VK_MISS_LOG, and reads 0. The search left in after the table cost each load an inlined copy of it: Kokiri's compute
+        // ee7764a6 147 -> 49 KB of code and 218 -> 0 spilled registers, its 720p fragment pass da7a7ab2 122 -> 41 KB and 86 -> 0;
+        // the frame's GPU time 13.85 -> 13.05 ms at 1440p, 63.2 -> 64.7 fps. The table covers every pool a storage buffer can be
+        // bound from, at the same device address (vk_memory.cpp gpu_buffer_bind / guest_pages_set): RX_VK_FOLLOW_AUDIT below found
+        // no load the search held after a table miss over a save's load and minutes of play, compute, vertex and fragment stages.
+        // What the table cannot hold: an address outside its two windows, and no table at all (memory_guest_pages logs it))
+        // (RX_VK_FOLLOW_AUDIT=1 with =2 and RX_VK_MISS_LOG=1: a load the search found after the table missed goes to the miss log
+        // too, its address with bit 63 set: what =3 would have read as 0. None over play and loads: =3 reads what =2 reads)
+        static const bool audit{getenv("RX_VK_FOLLOW_AUDIT") && atoi(getenv("RX_VK_FOLLOW_AUDIT")) != 0};
+        if (table_first && ff_level >= 3) record_miss(addr);
+        else define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
+            if (table_first && audit) record_miss(OpBitwiseOr(U64, addr, Constant(U64, u64{1} << 63)));
+            OpReturnValue(OpLoad(type, ssbo_pointer));
+        }, !table_first);
         if (!table_first) guest_lookup(addr, 1U << shift, [&](Id target) {
             if (gp_level >= 3) OpReturnValue(psb_load(type, target, 4U));
             else OpReturnValue(ConstantNull(type));

@@ -53,6 +53,18 @@ inline void note_work_cmd(VkCommandBuffer c) {
     if (!work_seg_skip_all) all_work_slot(c).fetch_add(1, std::memory_order_relaxed);
     if (!work_seg_local) work_epoch.fetch_add(1, std::memory_order_relaxed);
 }
+// (better-aa, RX_VK_BARRIER_SRC, vk_texture.cpp full_barrier) Render passes ended (the draws, their clears and resolves) and
+// command buffers begun, by the slot of the command buffer as above: with other_work_by_cmd and xfer_work_by_cmd (their
+// difference is the dispatches) a full barrier sees which kinds of work went into its command buffer since the last one
+extern std::atomic<uint64_t> gfx_work_by_cmd[64], begin_by_cmd[64];
+inline void note_gfx_work(VkCommandBuffer c) {
+    const uintptr_t v = (uintptr_t)c;
+    gfx_work_by_cmd[((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63].fetch_add(1, std::memory_order_relaxed);
+}
+inline void note_begin(VkCommandBuffer c) {
+    const uintptr_t v = (uintptr_t)c;
+    begin_by_cmd[((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63].fetch_add(1, std::memory_order_relaxed);
+}
 extern std::atomic<uint64_t> foreign_work;   // (TICK-057: note_work's calls with no command buffer, NGX's: the dedupe by command buffer keeps the next barrier)
 inline void note_work() {
     foreign_work.fetch_add(1, std::memory_order_relaxed);
@@ -62,10 +74,10 @@ inline void note_work() {
 }
 } // namespace mkwvk
 
-#define vkBeginCommandBuffer(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkBeginCommandBuffer(c_, __VA_ARGS__))
+#define vkBeginCommandBuffer(c_, ...) (::mkwvk::note_begin(c_), ::mkwvk::note_work_cmd(c_), ::vkx::vkBeginCommandBuffer(c_, __VA_ARGS__))
 #define vkCmdPipelineBarrier2(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdPipelineBarrier2(c_, __VA_ARGS__))
 #define vkCmdBeginRendering(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdBeginRendering(c_, __VA_ARGS__))
-#define vkCmdEndRendering(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdEndRendering(c_ __VA_OPT__(,) __VA_ARGS__))
+#define vkCmdEndRendering(c_, ...) (::mkwvk::note_gfx_work(c_), ::mkwvk::note_work_cmd(c_), ::vkx::vkCmdEndRendering(c_ __VA_OPT__(,) __VA_ARGS__))
 #define vkCmdDraw(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdDraw(c_, __VA_ARGS__))
 #define vkCmdDrawIndexed(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdDrawIndexed(c_, __VA_ARGS__))
 #define vkCmdDrawIndirect(c_, ...) (::mkwvk::note_work_cmd(c_), ::vkx::vkCmdDrawIndirect(c_, __VA_ARGS__))

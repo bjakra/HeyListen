@@ -193,10 +193,12 @@ void AddNVNStorageBuffers(IR::Program& program) {
     }
     // (EvilOOT) RX_VK_MISS_LOG=1, diagnostics: a buffer at c0+0xff0 (no real slot) that the global memory functions record
     // the addresses no binding held in (spirv_emit_context.cpp), bound by the back end per program (vk_draw.cpp)
-    static const bool miss_log{std::getenv("RX_VK_MISS_LOG") != nullptr && std::atoi(std::getenv("RX_VK_MISS_LOG")) != 0};
+    static const int miss_log{std::getenv("RX_VK_MISS_LOG") ? std::atoi(std::getenv("RX_VK_MISS_LOG")) : 0};
     // (compute only: the driver crashed compiling a mesh program with it; and only the program vk_shader.cpp names when
-    // RX_VK_MISS_LOG_PROG is set: Optimization::g_nvn2_miss_log_this)
-    if (miss_log && (program.stage == Stage::Compute || program.stage == Stage::Mesh || program.stage == Stage::Task) &&
+    // RX_VK_MISS_LOG_PROG is set: Optimization::g_nvn2_miss_log_this. better-aa: =2 the vertex and fragment stages too, for
+    // RX_VK_FOLLOW_AUDIT: they follow pointers through the table as well)
+    const bool graphics_too{miss_log >= 2 && (program.stage == Stage::VertexB || program.stage == Stage::Fragment)};
+    if (miss_log && (program.stage == Stage::Compute || program.stage == Stage::Mesh || program.stage == Stage::Task || graphics_too) &&
         Optimization::g_nvn2_miss_log_this && descs.size() < Info::MAX_SSBOS) {
         descs.push_back({
             .cbuf_index = driver_cbuf,

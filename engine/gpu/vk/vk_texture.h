@@ -221,6 +221,7 @@ void dispatch_barrier(VkCommandBuffer cmd, const char* why);
 bool game_order();
 /// Full barriers recorded and left out (RX_VK_BARRIER_DEDUPE_OFF=1: none), since the start
 void barrier_stats(int64_t* made, int64_t* left_out);
+void barrier_src_stats(int64_t* full, int64_t* gfx, int64_t* cs, int64_t* xfer, int64_t* none);   // (RX_VK_BARRIER_SRC)
 /// (hookshot) Set around a draw's sampled-texture lookups (vk_draw.cpp): a new ASTC texture there may wait for a later frame
 /// once this frame's uploads passed their budget (texture_touch). Never for compute: a dispatch may bake what it reads once
 extern thread_local bool upload_defer_ok;

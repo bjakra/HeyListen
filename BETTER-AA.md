@@ -80,6 +80,16 @@ back end without a rebuild.
   each, the picture the same). On by default on RADV in stages that write no storage memory (`RX_VK_FOLLOW_FIRST=0`:
   off, `=2`: every stage, 12.8 ms but no higher frame rate). It is part of the program cache's stamp, so a change of
   it translates the shaders again.
+- **No storage-buffer search after the page table (GPU -6%, +4% fps).** With the table first, each global load still
+  carried Eden's search as the fallback for what the table does not map, inlined at every load: Kokiri's heaviest compute
+  pass ee7764a6 was 147 KB of code with 218 spilled registers, its 720p fragment pass da7a7ab2 122 KB with 86, several
+  times RDNA2's instruction cache. Now (`RX_VK_FOLLOW_FIRST=3`, RADV's default) every stage that follows pointers reads
+  through the table, and an address it does not map reads 0 (and goes to the miss log): 49 KB and 41 KB, no spills. The
+  table covers every pool a storage buffer can be bound from, at the same device address; to check, `RX_VK_FOLLOW_AUDIT=1`
+  (with `RX_VK_FOLLOW_FIRST=2 RX_VK_MISS_LOG=2 RX_VK_MISS_KEEP=1`) logs any load the search held after a table miss, with
+  bit 63 set: none over a save's load and minutes of play, compute, vertex and fragment stages. Kokiri, 1440p, Native AA,
+  three runs each: GPU 14.1 -> 13.3 ms, 62.2 -> 64.7 fps (on the monitor too: 13.85 -> 13.05 ms, 63.2 -> 64.7).
+  `RX_VK_FOLLOW_FIRST=1` brings back the table-first-then-search of above.
 - **Finer recording segments on 16-thread CPUs (+3.4%).** The renderer's timeline (`RX_VK_TL_S`, `tools/tl_classify.py`)
   showed the GPU idle while the Presentation Thread recorded medium command buffers alone, ~2 ms each. Fine segments
   (up to 10 of ~128 draws, more than there are recorders) were on only under 16 hardware threads; now also at 16.
@@ -91,6 +101,12 @@ back end without a rebuild.
   not translate everything again on each start. For a clean A/B also set `RX_VK_NO_PREDICT=1` and
   `MESA_SHADER_CACHE_MAX_SIZE=8G`: otherwise the background pipeline prediction keeps four threads compiling for many
   minutes after a switch, and the frame rate drops from 60 to the mid 40s.
+- **Tried, no gain on RADV:** a full barrier's source scope from the work recorded since the last one
+  (`RX_VK_BARRIER_SRC=1`: of ~550 barriers a frame, ~300 lose the colour and depth cache flush), GPU 13.85 -> 13.80 ms,
+  the frame rate the same: the drain is the cost, not the flush. Faster capture scans (`RX_VK_COLLECT_FAST=1` with
+  `RX_VK_CAPTURE_SCAN_SPLIT=1` or `RX_VK_CAPTURE_PRECOPY=1`), 96-draw segments, `RX_VK_SEG_MAX=12` (-10%): inside the
+  noise or slower. `RX_VK_MISS_LOG=2` puts the miss log in vertex and fragment stages too, `RX_VK_MISS_KEEP=1` keeps its
+  counts from the start instead of from the capture's frame.
 - **Recompiler changes, exact but not faster here.** Tested and kept, but they measured inside the noise on this PC
   (the old binary 51.5, the new 51.8 fps, three restarts each), because the game's code is not on the frame's critical
   path here:

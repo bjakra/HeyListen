@@ -2887,7 +2887,20 @@ std::atomic<uint64_t> other_work_by_cmd[64]{};
 std::atomic<uint64_t> xfer_work_by_cmd[64]{};
 std::atomic<uint64_t> all_work_by_cmd[64]{};   // (TICK-057, vk_work.h)
 std::atomic<uint64_t> foreign_work{0};
+std::atomic<uint64_t> gfx_work_by_cmd[64]{}, begin_by_cmd[64]{};   // (better-aa, vk_work.h)
 namespace {
+// (better-aa, RX_VK_BARRIER_SRC=1) A full barrier's source scope from the work recorded into its command buffer since this
+// thread's last full barrier there. RADV turns ALL_COMMANDS / MEMORY_WRITE into waits for every stage and a flush and
+// invalidate of the colour and depth caches and their metadata (radv_cmd_buffer.c radv_stage_flush, radv_src_access_flush), at
+// each of ~570 barriers a frame, whatever ran before them. Everything before that last barrier is ordered by it already
+// (submission order chains them), so the next one need only take what came after: render passes ended (the graphics stages,
+// any write), dispatches (the compute stage, shader writes), copies, clears and queries (the transfer stages, their writes);
+// nothing at all: left out. A history this thread did not see is the full scope, as before: no barrier of its own on that
+// command buffer yet (a slot of 8 by handle), the command buffer begun again since, or work recorded with no command buffer
+// (note_work: NGX's). Two command buffers in one counter slot count each other's work: a wider scope, never a narrower one
+struct SrcSeen { VkCommandBuffer cmd; uint64_t gfx, other, xfer, begin, foreign; };
+thread_local SrcSeen src_seen[8]{};
+std::atomic<int64_t> st_src_full{0}, st_src_gfx{0}, st_src_cs{0}, st_src_xfer{0}, st_src_none{0};
 thread_local uint64_t last_barrier_cmd_work = 0, last_barrier_foreign = 0;   // (TICK-057: the command buffer's count at this thread's last full barrier)
 // (TICK-057, RX_VK_BARRIER_TRUST / RX_VK_GAME_BARRIER_NARROW) this thread's last barrier of any kind (a full one, or the game's
 // narrowed one) and the command buffer's counts then: the trust point
@@ -2903,6 +2916,11 @@ std::atomic<int64_t> st_barriers_made{0}, st_barriers_left_out{0};
 } // namespace
 void barrier_stats(int64_t* made, int64_t* left_out) {
     *made = st_barriers_made.load(std::memory_order_relaxed), *left_out = st_barriers_left_out.load(std::memory_order_relaxed);
+}
+void barrier_src_stats(int64_t* full, int64_t* gfx, int64_t* cs, int64_t* xfer, int64_t* none) {
+    *full = st_src_full.load(std::memory_order_relaxed), *gfx = st_src_gfx.load(std::memory_order_relaxed);
+    *cs = st_src_cs.load(std::memory_order_relaxed), *xfer = st_src_xfer.load(std::memory_order_relaxed);
+    *none = st_src_none.load(std::memory_order_relaxed);
 }
 
 // (hookshot) A full barrier right after another one on the same command buffer, no command that does or orders GPU work in between
@@ -3039,11 +3057,39 @@ void full_barrier(VkCommandBuffer cmd, const char* why) {
         st_barriers_left_out_par.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    VkPipelineStageFlags2 src_stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkAccessFlags2 src_access = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    static const bool derive_src = getenv("RX_VK_BARRIER_SRC") && atoi(getenv("RX_VK_BARRIER_SRC")) != 0;
+    if (derive_src) {
+        const uintptr_t v = (uintptr_t)cmd;
+        const size_t k = ((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63;
+        const SrcSeen now{cmd, gfx_work_by_cmd[k].load(std::memory_order_relaxed), other_work_by_cmd[k].load(std::memory_order_relaxed),
+                          xfer_work_by_cmd[k].load(std::memory_order_relaxed), begin_by_cmd[k].load(std::memory_order_relaxed),
+                          foreign_work.load(std::memory_order_relaxed)};
+        SrcSeen& seen = src_seen[(v >> 4) & 7];
+        if (seen.cmd == cmd && seen.begin == now.begin && seen.foreign == now.foreign) {
+            const uint64_t xfer = now.xfer - seen.xfer, dispatches = (now.other - seen.other) - xfer, gfx = now.gfx - seen.gfx;
+            src_stages = src_access = 0;
+            if (gfx) src_stages |= VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, src_access |= VK_ACCESS_2_MEMORY_WRITE_BIT;
+            if (dispatches) src_stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, src_access |= VK_ACCESS_2_SHADER_WRITE_BIT;
+            if (xfer) src_stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, src_access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            (gfx ? st_src_gfx : dispatches && xfer ? st_src_xfer : dispatches ? st_src_cs : xfer ? st_src_xfer : st_src_none)
+                .fetch_add(1, std::memory_order_relaxed);
+        } else {
+            st_src_full.fetch_add(1, std::memory_order_relaxed);
+        }
+        seen = now;
+        if (!src_stages) {   // (nothing since this thread's last full barrier on it)
+            st_barriers_left_out.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
     st_barriers_made.fetch_add(1, std::memory_order_relaxed);
     GprofSpan gp(cmd, why);   // (RX_VK_PASS_TIMING: what a barrier costs the GPU that has nothing left to wait for)
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-    b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.srcStageMask = src_stages;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.srcAccessMask = src_access;
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.memoryBarrierCount = 1;

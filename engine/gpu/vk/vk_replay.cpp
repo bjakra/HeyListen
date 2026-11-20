@@ -5676,6 +5676,16 @@ void log_frame_stats() {
                  "parallel replay), %.1f pass starts ordered in their fragment stages only (RX_VK_PASS_BARRIER=game)",
                  (made - l_made) / 120.0, (left - l_left) / 120.0, (lpar - l_lpar) / 120.0, (relaxed - l_relaxed) / 120.0);
             l_lpar = lpar;
+            {   // (better-aa, RX_VK_BARRIER_SRC=1: the full barriers by the source scope they got)
+                static int64_t l_f, l_g, l_c, l_x, l_n;
+                int64_t f = 0, g = 0, c = 0, x = 0, n = 0;
+                barrier_src_stats(&f, &g, &c, &x, &n);
+                if (f + g + c + x + n)
+                    logf("vk: a frame: full barriers' source scope: all %.1f (history unknown), graphics %.1f, compute only %.1f, "
+                         "transfer %.1f, nothing (left out) %.1f", (f - l_f) / 120.0, (g - l_g) / 120.0, (c - l_c) / 120.0,
+                         (x - l_x) / 120.0, (n - l_n) / 120.0);
+                l_f = f, l_g = g, l_c = c, l_x = x, l_n = n;
+            }
             {   // (TICK-057: RX_VK_BARRIER_TRUST, RX_VK_GAME_BARRIER_NARROW)
                 static int64_t l_pl, l_pa, l_dl, l_gn;
                 int64_t pl = 0, pa = 0, dl = 0, gn = 0;

@@ -5891,7 +5891,9 @@ void stats_tick() {
         }
         {
             std::lock_guard ml(miss_mu);   // (the misses from here on: older frames' in-flight work may still add some)
-            if (miss_map) std::memset(miss_map, 0, (size_t)kMissSlice * kMissSlices);
+            // (better-aa, RX_VK_MISS_KEEP=1: all since the start, the loads and play before the capture too: RX_VK_FOLLOW_AUDIT)
+            static const bool keep = getenv("RX_VK_MISS_KEEP") != nullptr;
+            if (miss_map && !keep) std::memset(miss_map, 0, (size_t)kMissSlice * kMissSlices);
         }
         stats_used.store(0);
         stats_written.store(false);
