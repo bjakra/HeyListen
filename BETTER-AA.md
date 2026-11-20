@@ -37,6 +37,12 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   71.6 fps at 1440p). Only the grass effect's own pools need it (8 KB and 120 KB ones, found with `RX_VK_WB_POOL_LOG=1`), so
   the limit here is 128 KB and the CPU-write rule is off (`RX_VK_WB_SMALL_EAGER_KB=4096 RX_VK_WB_POOL_EAGER=1` is
   upstream's): the leaves fly as with upstream's fix, at the old frame rate.
+- **Less stutter at area changes: every ASTC transcode cached.** GPUs without ASTC (AMD, NVIDIA desktop) get the game's
+  textures transcoded to BC on the GPU. The game destroys and makes them again at each area change, and upstream's lazy BC
+  cache (on cards with more than 9.5 GB) stored nothing in that case, so every return to an area transcoded them all again.
+  The cache now stores every transcode (`RX_VK_BC_CACHE_LAZY=1` is upstream's): walking Castle Town's gate <-> market at
+  1440p on an RX 6800, the 1% low went 24.4 -> 31.2 fps and frames over 33 ms 35 -> 6.5 a minute. Up to 1 GB of system RAM
+  (`RX_VK_BC_CACHE_MB`).
 - **The right scene depth for motion vectors.** The game has no motion vectors: the renderer makes them from the scene's
   depth and camera. Some places draw the picture with two depth buffers (the Kokiri Sword's crawl tunnel, parts of the
   forest): the game goes on to a second depth partway through the frame, and only that one lines up with the picture.

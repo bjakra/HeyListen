@@ -1349,9 +1349,16 @@ uint64_t bcc_cap() {
 // castle walk evicts and makes again textures transcoded at the scene's load, before either trigger: storing all, 416 came from
 // the cache and 274 were transcoded again; storing from the first eviction, 360 and 404; from 3/4 of the budget, 12 and 208 of
 // 220 made again (one run each)
+// (better-aa) Off by default everywhere (=1: the lazy mode above, on cards allowed more than 9.5 GB as upstream has it). The
+// RTX 5070's scenes did not go back to an area; walking back and forth between Castle Town's gate and its market does, and
+// the game destroys and makes again its ASTC textures at each area change, before either trigger. On the RX 6800 (16 GB,
+// 1440p FSR 4 Native AA, the walk 58 s, two runs each without a full area load): lazy, 0 stored and 2420 transcodes of bytes
+// transcoded before, 1% low 24.4 fps, 212 frames over 25 ms and 35 over 33 ms; storing all, 2250-3110 textures served from
+// the cache, 1% low 31.2 fps, 63 and 6.5. The cost is the cache's host-cached memory (RX_VK_BC_CACHE_MB, 1024 MB at most).
 bool bcc_lazy() {
     static const bool v = [] {
-        if (const char* e = getenv("RX_VK_BC_CACHE_LAZY")) return atoi(e) != 0;
+        const char* e = getenv("RX_VK_BC_CACHE_LAZY");
+        if (!e || atoi(e) == 0) return false;
         uint64_t used = 0, allowed = 0;
         return vram_usage(&used, &allowed) && allowed > (9ull << 30) + (512ull << 20);
     }();
