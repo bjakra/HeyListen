@@ -80,6 +80,12 @@ back end without a rebuild.
   each, the picture the same). On by default on RADV in stages that write no storage memory (`RX_VK_FOLLOW_FIRST=0`:
   off, `=2`: every stage, 12.8 ms but no higher frame rate). It is part of the program cache's stamp, so a change of
   it translates the shaders again.
+- **Turn on Resizable BAR (+17%; a firmware setting, not code).** Without it the CPU sees 256 MB of VRAM, and RADV keeps
+  every buffer resident: that window sat full, and each kernel submit (`DRM_IOCTL_AMDGPU_CS`, ~30 a frame) spent up to
+  0.5-2 ms in amdgpu's range-limited VRAM allocator, which kept Mesa's submit thread 42% busy while the GPU waited for work.
+  With "Above 4G Decoding" and "Re-Size BAR Support" on (`mem_info_vis_vram_total` = all VRAM), Kokiri, 1440p, Native AA,
+  on the headless output: 64.0 -> 75.0 fps (three runs), GPU 13.4 -> 10.8 ms, submits 1.67 s -> 0.39 s per 4 s, none over
+  256 us. (Capping batches at 8 command buffers, +2% before, does nothing now.)
 - **No storage-buffer search after the page table (GPU -6%, +4% fps).** With the table first, each global load still
   carried Eden's search as the fallback for what the table does not map, inlined at every load: Kokiri's heaviest compute
   pass ee7764a6 was 147 KB of code with 218 spilled registers, its 720p fragment pass da7a7ab2 122 KB with 86, several
