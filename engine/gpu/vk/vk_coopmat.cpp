@@ -527,6 +527,15 @@ void coopmat_init() {
     // has it: the neon plants were reported on NVIDIA cards too, and one NaN texel spreads through bloom and blur
     Shader::Backend::SPIRV::frag_nan_guard = !std::getenv("RX_VK_NO_NAN_GUARD");
     if (Shader::Backend::SPIRV::frag_nan_guard) logf("vk: colour outputs NaN-guarded");
+    {   // (better-aa, mma_layout.h follow_first) RX_VK_FOLLOW_FIRST=0/1/2 over the default: 1 on RADV, else 0
+        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        const char* e = std::getenv("RX_VK_FOLLOW_FIRST");
+        Shader::Backend::SPIRV::follow_first = e ? std::clamp(atoi(e), 0, 2) : drv.driverID == VK_DRIVER_ID_MESA_RADV ? 1 : 0;
+        if (Shader::Backend::SPIRV::follow_first)
+            logf("vk: global loads through the page table first (%s)", Shader::Backend::SPIRV::follow_first == 2 ? "every stage" : "stages that write no storage memory");
+    }
     Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !std::getenv("RX_VK_NO_INVARIANT");
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
     // (hookshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices

@@ -1313,6 +1313,12 @@ uint64_t disk_stamp() {
     }
     // (longshot #2306: and whether a float add is the GPU's own atomic (make_profile): a program made with OpAtomicFAddEXT is no use
     // to a GPU without it. Added only when it is, so that the stamp of every GPU that keeps the loop is what it was)
+    // (better-aa: and global loads through the page table first, mma_layout.h follow_first. Added only when on, so the stamp of a
+    // GPU that keeps the search first is what it was)
+    if (Shader::Backend::SPIRV::follow_first) {
+        const uint32_t ff = 0xFF00u | (uint32_t)Shader::Backend::SPIRV::follow_first;
+        add(&ff, sizeof ff);
+    }
     if (dev.float_atomic_add) {
         const uint32_t float_add = 1;
         add(&float_add, sizeof float_add);
@@ -1436,7 +1442,11 @@ void disk_init() {
         char exe[MAX_PATH];
         const DWORD n = game_module_path(exe, MAX_PATH);
         std::string path(exe, n);
-        path = path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_programs.bin";
+        // (better-aa, RX_VK_PROGRAM_CACHE_TAG=<tag>: hookshot_programs_<tag>.bin, a cache of its own for an A/B of translation
+        // switches: under one file each switch's stamp made the other's records useless, and the next run translated and built
+        // every program again while it was measured)
+        const char* const tag = getenv("RX_VK_PROGRAM_CACHE_TAG");
+        path = path.substr(0, path.find_last_of("\\/") + 1) + (tag && *tag ? std::string("hookshot_programs_") + tag + ".bin" : "hookshot_programs.bin");
         // (one Hookshot at a time on a cache: a second one, started while the first wrote, took the record being written for one
         // cut short and cut the file there, under the first, whose list of records then named bytes written over since. Held
         // until the process ends)

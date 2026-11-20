@@ -24,6 +24,10 @@ inline bool mma_software_quad = false;
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Hookshot issue 606). On for every
 // card but NVIDIA (vk_coopmat.cpp coopmat_init); RX_VK_NO_NAN_GUARD=1 turns it off. Idea from NX2navi patch 0027.
 inline bool frag_nan_guard = false;
+// (better-aa) global loads through the guest page table before the storage buffers' search (spirv_emit_context.cpp
+// DefineGlobalMemoryFunctions, RX_VK_FOLLOW_FIRST): 0 off, 1 in stages that write no storage memory, 2 in every stage. 1 by
+// default on Mesa's RADV (vk_coopmat.cpp coopmat_init), in the program cache's stamp
+inline int follow_first = 0;
 // (amd-fix) gl_Position decorated Invariant (vertex and mesh outputs): the game draws a depth pre-pass, then the colour
 // pass again with depth EQUAL; Maxwell computes the same position in both, AMD's compiler may not without Invariant, and
 // the colour pass is then rejected in spots: holes showing the bright sky, blown up by bloom (the glowing flowers).

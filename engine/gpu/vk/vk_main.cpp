@@ -364,7 +364,8 @@ bool create_device() {
     bool atomic_float = false;
     if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
-    if (getenv("RX_VK_TL") || getenv("RX_VK_TL_S")) optional(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, dev.calibrated_ts);   // (stream R2: the timeline's GPU side)
+    if (getenv("RX_VK_TL") || getenv("RX_VK_TL_S")) optional(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, dev.calibrated_ts);
+    if (getenv("RX_VK_PIPE_STATS")) optional(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, dev.pipeline_stats);   // (better-aa: vk_draw.cpp pipe_stats_log)   // (stream R2: the timeline's GPU side)
 #ifndef _WIN32
     // (Linux) tl_gpu_dump asks for the device's and the host clock's time (vk_tl_clock.h: CLOCK_MONOTONIC, the shim's
     // QueryPerformanceCounter); a domain the device does not list may not be asked for, so the GPU side (and RX_VK_TL_PROBE) is off
@@ -628,6 +629,9 @@ bool create_device() {
     dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pexec{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    pexec.pipelineExecutableInfo = VK_TRUE;
+    if (dev.pipeline_stats) pexec.pNext = &f, ci.pNext = &pexec;   // (better-aa, RX_VK_PIPE_STATS)
     ci.queueCreateInfoCount = queue_infos;
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();

@@ -973,11 +973,92 @@ VkResult note_out_of_memory(VkResult r) {
         st_driver_out_of_memory.fetch_add(1, std::memory_order_relaxed);
     return r;
 }
+// (better-aa, a diagnostic) RX_VK_PIPE_STATS=<key prefix>,...: the driver's statistics of the pipelines of the programs named
+// (VK_KHR_pipeline_executable_properties: registers, spills, instructions, waves), logged when they are built ("vk: pipe stats").
+// Asked of the driver without our pipeline cache, so that it compiles them now. The key is the building thread's (pipe_stats_key)
+thread_local uint64_t pipe_stats_key = 0;
+bool pipe_stats_want(uint64_t key) {
+    static const char* const want = getenv("RX_VK_PIPE_STATS");
+    if (!want || !*want || !dev.pipeline_stats || !key) return false;
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    for (const char* at = want; *at;) {
+        const char* e = strchr(at, ',');
+        const size_t n = e ? (size_t)(e - at) : strlen(at);
+        if (n && n <= 16 && !strncmp(hex, at, n)) return true;
+        at = e ? e + 1 : at + n;
+    }
+    return false;
+}
+void pipe_stats_log(VkPipeline pl, uint64_t key) {
+    static auto props = (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineExecutablePropertiesKHR");
+    static auto stats = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(dev.device, "vkGetPipelineExecutableStatisticsKHR");
+    if (!pl || !props || !stats) return;
+    VkPipelineInfoKHR pi{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    pi.pipeline = pl;
+    uint32_t n = 0;
+    props(dev.device, &pi, &n, nullptr);
+    std::vector<VkPipelineExecutablePropertiesKHR> ex(n, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+    props(dev.device, &pi, &n, ex.data());
+    for (uint32_t i = 0; i < n; i++) {
+        VkPipelineExecutableInfoKHR ei{VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+        ei.pipeline = pl, ei.executableIndex = i;
+        uint32_t m = 0;
+        stats(dev.device, &ei, &m, nullptr);
+        std::vector<VkPipelineExecutableStatisticKHR> st(m, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+        stats(dev.device, &ei, &m, st.data());
+        std::string line;
+        for (const auto& s : st) {
+            char v[96];
+            switch (s.format) {
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: snprintf(v, sizeof v, "%u", s.value.b32); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: snprintf(v, sizeof v, "%lld", (long long)s.value.i64); break;
+                case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: snprintf(v, sizeof v, "%llu", (unsigned long long)s.value.u64); break;
+                default: snprintf(v, sizeof v, "%.2f", s.value.f64); break;
+            }
+            line += std::string(" ") + s.name + "=" + v + ";";
+        }
+        logf("vk: pipe stats %016llx %s (subgroup %u):%s", (unsigned long long)key, ex[i].name, ex[i].subgroupSize, line.c_str());
+        // (RX_VK_PIPE_IR=<folder>: the driver's internal representations too, NIR and the disassembly, one file each)
+        static const char* const ir_dir = getenv("RX_VK_PIPE_IR");
+        static auto irs = (PFN_vkGetPipelineExecutableInternalRepresentationsKHR)vkGetDeviceProcAddr(
+            dev.device, "vkGetPipelineExecutableInternalRepresentationsKHR");
+        if (!ir_dir || !irs) continue;
+        uint32_t k = 0;
+        irs(dev.device, &ei, &k, nullptr);
+        std::vector<VkPipelineExecutableInternalRepresentationKHR> rep(k, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR});
+        irs(dev.device, &ei, &k, rep.data());
+        std::vector<std::vector<char>> data(k);
+        for (uint32_t j = 0; j < k; j++) data[j].resize(rep[j].dataSize), rep[j].pData = data[j].data();
+        irs(dev.device, &ei, &k, rep.data());
+        for (uint32_t j = 0; j < k; j++) {
+            std::string nm = rep[j].name;
+            for (char& c : nm) if (!isalnum((unsigned char)c)) c = '_';
+            char path[512];
+            snprintf(path, sizeof path, "%s/%016llx_%s_%s.txt", ir_dir, (unsigned long long)key, ex[i].name, nm.c_str());
+            if (FILE* f = fopen(path, "wb")) fwrite(data[j].data(), 1, strnlen(data[j].data(), data[j].size()), f), fclose(f);
+        }
+    }
+}
 VkResult guarded_graphics_held(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    if (!(ci->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) && pipe_stats_want(pipe_stats_key)) {
+        VkGraphicsPipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | (getenv("RX_VK_PIPE_IR") ? VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR : 0);
+        const VkResult r = guarded_graphics(VK_NULL_HANDLE, &c, pl);
+        if (r == VK_SUCCESS) pipe_stats_log(*pl, pipe_stats_key);
+        return note_out_of_memory(r);
+    }
     PcacheUse use(cache);
     return note_out_of_memory(guarded_graphics(cache, ci, pl));
 }
 VkResult guarded_compute_held(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    if (pipe_stats_want(pipe_stats_key)) {
+        VkComputePipelineCreateInfo c = *ci;
+        c.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | (getenv("RX_VK_PIPE_IR") ? VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR : 0);
+        const VkResult r = guarded_compute(VK_NULL_HANDLE, &c, pl);
+        if (r == VK_SUCCESS) pipe_stats_log(*pl, pipe_stats_key);
+        return note_out_of_memory(r);
+    }
     PcacheUse use(cache);
     return note_out_of_memory(guarded_compute(cache, ci, pl));
 }
@@ -1946,6 +2027,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     static const int delay_ms = getenv("RX_VK_PIPE_DELAY_MS") ? atoi(getenv("RX_VK_PIPE_DELAY_MS")) : 0;
     if (delay_ms > 0 && part < 0 && !driver_cache_only) Sleep((DWORD)delay_ms);
     if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
+    pipe_stats_key = p.key;   // (better-aa, RX_VK_PIPE_STATS)
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -8944,6 +9026,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
+        pipe_stats_key = p.key;   // (better-aa, RX_VK_PIPE_STATS)
         if (gated_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
@@ -9236,6 +9319,7 @@ void precompile_run(void (*progress)(size_t done, size_t total), bool wait) {
                 ci.layout = p.layout;
                 VkPipeline made = VK_NULL_HANDLE;
                 const bool quick = precompile_compute_quick(ci);
+                pipe_stats_key = p.key;   // (better-aa, RX_VK_PIPE_STATS)
                 if (gated_compute(pcache, &ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
                 if (made) {
                     std::atomic_ref<VkPipeline>(p.compute_pipeline).store(made, std::memory_order_release);
@@ -9469,6 +9553,7 @@ void compute_optimize(Program& q) {
     ci.layout = q.layout;
     const auto t0 = std::chrono::steady_clock::now();
     VkPipeline made = VK_NULL_HANDLE;
+    pipe_stats_key = q.key;   // (better-aa, RX_VK_PIPE_STATS)
     if (const VkResult r = gated_compute(pcache, &ci, &made); r != VK_SUCCESS || !made) {
         static std::atomic<int> told{0};
         if (told++ < 20)
@@ -9636,6 +9721,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 fci.pipelineStageCreationFeedbackCount = 0;
                 fci.pPipelineCreationFeedback = &fb;
                 ci.pNext = &fci;
+                pipe_stats_key = q.key;   // (better-aa, RX_VK_PIPE_STATS)
                 if (const VkResult r = gated_compute(pcache, &ci, &made); r != VK_SUCCESS || !made) {
                     static std::atomic<int> told{0};
                     if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)q.key, (int)r);
@@ -9700,6 +9786,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             if (told++ < 400) logf("vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
         }
         VkPipeline built = VK_NULL_HANDLE;   // (published only once made: other threads read it meanwhile)
+        pipe_stats_key = p.key;   // (better-aa, RX_VK_PIPE_STATS)
         if (const VkResult made = gated_compute(pcache, &ci, &built); made != VK_SUCCESS) {
             static std::atomic<int> told{0};
             if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)p.key, (int)made);

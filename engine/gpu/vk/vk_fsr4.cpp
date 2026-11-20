@@ -40,6 +40,7 @@
 #include "api/include/vk/ffx_api_vk.h"
 #include "upscalers/include/ffx_upscale.h"
 #endif
+#include "vk_gprof.h"
 #include "vk_work.h"   // (after the others: the barriers here count as work for full_barrier)
 
 namespace mkwvk {
@@ -432,7 +433,9 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     d.cameraNear = f.near_z, d.cameraFar = f.far_z, d.cameraFovAngleVertical = f.fov_y;
     d.viewSpaceToMetersFactor = 1.0f;
     d.flags = s.context->hdr ? 0u : (uint32_t)FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;   // (HDR: linear light)
+    const bool timed = gprof_begin(cmd);   // (better-aa, RX_VK_PASS_TIMING=1: FSR 4's GPU time by itself)
     const ffxReturnCode_t r = l.dispatch(&s.context->context, &d.header);
+    if (timed) gprof_end(cmd, "fsr4 upscale");
     note_work();   // (AMD's dispatches: full_barrier must not take the next barrier for a repeat of the one before them)
 
     const VkImageMemoryBarrier2 out[4] = {barrier(f.color.image, VK_ACCESS_2_SHADER_READ_BIT, any, R, G),

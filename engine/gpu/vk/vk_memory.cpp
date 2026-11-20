@@ -30,6 +30,7 @@
 #include <windows.h>
 
 #include "vk_internal.h"
+#include "vk_tune.h"
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_draw.h"      // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_ledger.h"    // (RX_VK_LEDGER)
@@ -55,6 +56,9 @@
 #include "shaders/wb_diff_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
+namespace mkwvk {
+uint64_t rb_order_serial();   // (better-aa, vk_replay.cpp: the replay thread's draws and dispatches so far)
+}
 namespace mkwvk {
 // (RX_VK_POOL_FINALIZE: the captures of the game's submits queued, and those the replay took: a finalize waits for the ones before it)
 std::atomic<uint64_t> submits_queued{0}, submits_taken{0};
@@ -1575,7 +1579,9 @@ void cap_born_take(std::vector<std::pair<uint64_t, uint64_t>>& out) {
 /// (RX_VK_CAP_ONLY_GPU) a replay read or a buffer binding of [gpu, gpu + n): counted, and the first 20 logged, when it reaches
 /// into the left-out ranges
 void cap_excl_note(uint64_t gpu, uint64_t n, const char* who, const void* caller = nullptr) {
-    if (!n) return;
+    static const bool off = getenv("RX_VK_EXCL_NOTE") && atoi(getenv("RX_VK_EXCL_NOTE")) == 0;   // (better-aa, an A/B: =0 none)
+    static TuneHot live{"excl", 0};   // (better-aa, RX_VK_TUNE excl=1: none, live)
+    if (!n || off || live.get() == 1) return;
     const uint64_t g = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
     if (!g || !cap_excl_hit(g, g + n)) return;
     const int64_t k = st_excl_reads.fetch_add(1, std::memory_order_relaxed);
@@ -5343,8 +5349,8 @@ void rb_hazard_locked(uint64_t lo, uint64_t hi) {   // (pools_mu held)
     if (rb_order_log() && texture_frame_no() % 300 == 0 && hi > lo)
         for (uint64_t pg = lo >> kPageShift; pg <= (hi - 1) >> kPageShift; pg++)
             if (rb_pages.count((uint32_t)pg)) {
-                logf("vk: rb-order frame %llu: a GPU write into a readback page %#llx +%#llx", (unsigned long long)texture_frame_no(),
-                     (unsigned long long)lo, (unsigned long long)(hi - lo));
+                logf("vk: rb-order frame %llu: a GPU write into a readback page %#llx +%#llx (draw %llu)", (unsigned long long)texture_frame_no(),
+                     (unsigned long long)lo, (unsigned long long)(hi - lo), (unsigned long long)rb_order_serial());
                 break;
             }
     if (rb_hazards_epoch != mirror_epoch) rb_hazards.clear(), rb_hazards_epoch = mirror_epoch;

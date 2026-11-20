@@ -42,6 +42,10 @@ struct Texture {
     uint32_t sparse_type = 0;
     VkDeviceSize sparse_align = 0;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    // (better-aa, RX_VK_DCC) the formats its views were declared to take (VkImageFormatListCreateInfo: AMD's DCC needs it);
+    // 0: no list, any of its class
+    uint8_t view_list_n = 0;
+    VkFormat view_list[12] = {};
     bool cube = false;        // CUBE_COMPATIBLE
     bool astc = false;        // ASTC blocks decoded into RGBA8 (block_w x block_h)
     bool bc = false;          // (and kept as BC1 / BC7 (TICK-031), or BC3: re-encoded on the GPU after decoding; vk_texture.cpp)

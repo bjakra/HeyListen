@@ -619,10 +619,111 @@ bool astc_ready() {
     return true;
 }
 
+// ---- (better-aa) DCC for the game's colour images on AMD before RDNA 3 (RX_VK_DCC=1) ----
+// RADV gives an image with MUTABLE_FORMAT DCC (delta colour compression: render targets and the passes that read them at
+// a fraction of the memory traffic, and fast clears) on GFX10.3 and older only with a VkImageFormatListCreateInfo whose
+// formats all keep its DCC encoding: the same channels, channel size and swizzle, float with float and integer/normalised
+// with integer/normalised (mesa src/amd/vulkan radv_image.c radv_are_formats_dcc_compatible, radv_formats.c
+// radv_dcc_formats_compatible), and none that can take image atomics (R32_UINT/SINT) while STORAGE is set. Every colour
+// image here was made MUTABLE with no list, so none had DCC. With RX_VK_DCC=1 it is given the list of the formats of
+// its class that keep the encoding; a view of another format (outside its list: not allowed) is counted and logged
+// (dcc_view_outside), and made, as before
+struct DccShape {
+    uint8_t ch, size, swz;   // (swz: 0 RGBA order, 1 BGRA)
+    bool flt;
+};
+bool dcc_shape(VkFormat f, DccShape* d) {
+    switch (f) {
+    case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT: case VK_FORMAT_R8_SRGB:
+        *d = {1, 8, 0, false}; return true;
+    case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8_SRGB:
+        *d = {2, 8, 0, false}; return true;
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+        *d = {4, 8, 0, false}; return true;
+    case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SNORM: case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_B8G8R8A8_SINT:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        *d = {4, 8, 1, false}; return true;
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+        *d = {4, 10, 0, false}; return true;
+    case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SNORM: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
+        *d = {1, 16, 0, false}; return true;
+    case VK_FORMAT_R16_SFLOAT: *d = {1, 16, 0, true}; return true;
+    case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SNORM: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT:
+        *d = {2, 16, 0, false}; return true;
+    case VK_FORMAT_R16G16_SFLOAT: *d = {2, 16, 0, true}; return true;
+    case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SNORM: case VK_FORMAT_R16G16B16A16_UINT:
+    case VK_FORMAT_R16G16B16A16_SINT:
+        *d = {4, 16, 0, false}; return true;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: *d = {4, 16, 0, true}; return true;
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT: *d = {2, 32, 0, false}; return true;
+    case VK_FORMAT_R32G32_SFLOAT: *d = {2, 32, 0, true}; return true;
+    case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT: *d = {4, 32, 0, false}; return true;
+    case VK_FORMAT_R32G32B32A32_SFLOAT: *d = {4, 32, 0, true}; return true;
+    case VK_FORMAT_R32_SFLOAT: *d = {1, 32, 0, true}; return true;
+    default: return false;
+    }
+}
+bool dcc_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_DCC");
+        const bool v = e && atoi(e) != 0;
+        logf("vk: the game's colour images: %s (RX_VK_DCC)",
+             v ? "declared formats (VkImageFormatListCreateInfo), DCC where AMD's driver can" : "any format of their class, no list");
+        return v;
+    }();
+    return on;
+}
+/// (RX_VK_DCC) the list for an image of format f, or 0 (none: as before)
+int dcc_view_list(VkFormat f, VkFormat* out, int cap) {
+    DccShape a;
+    if (!dcc_on()) return 0;
+    if (!dcc_shape(f, &a)) {
+        // (a format of no shape above, B10G11R11 the scene's: a list of itself keeps DCC; the atomic ones never have it)
+        if (f == VK_FORMAT_R32_UINT || f == VK_FORMAT_R32_SINT || f == VK_FORMAT_R64_UINT || f == VK_FORMAT_R64_SINT ||
+            !(format_props(f).optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
+            return 0;
+        out[0] = f;
+        return 1;
+    }
+    static const VkFormat all[] = {
+        VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8_SINT, VK_FORMAT_R8_SRGB,
+        VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R8G8_UINT, VK_FORMAT_R8G8_SINT, VK_FORMAT_R8G8_SRGB,
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT, VK_FORMAT_R8G8B8A8_SRGB,
+        VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM, VK_FORMAT_B8G8R8A8_UINT, VK_FORMAT_B8G8R8A8_SINT, VK_FORMAT_B8G8R8A8_SRGB,
+        VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_A2B10G10R10_UINT_PACK32,
+        VK_FORMAT_R16_UNORM, VK_FORMAT_R16_SNORM, VK_FORMAT_R16_UINT, VK_FORMAT_R16_SINT, VK_FORMAT_R16_SFLOAT,
+        VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT, VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_SINT,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32_SINT, VK_FORMAT_R32G32_SFLOAT,
+        VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_SINT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32_SFLOAT,
+    };
+    int n = 0;
+    out[n++] = f;
+    for (VkFormat g : all) {
+        DccShape b;
+        if (g != f && dcc_shape(g, &b) && b.ch == a.ch && b.size == a.size && b.swz == a.swz && b.flt == a.flt && n < cap &&
+            (format_props(g).optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)))
+            out[n++] = g;
+    }
+    return n;
+}
+std::atomic<int64_t> st_dcc_outside{0};
+void dcc_view_outside(const Texture* tex, VkFormat f) {
+    for (int i = 0; i < tex->view_list_n; i++)
+        if (tex->view_list[i] == f) return;
+    const int64_t k = st_dcc_outside.fetch_add(1, std::memory_order_relaxed);
+    if (k < 40 || (k & (k - 1)) == 0)
+        logf("vk: RX_VK_DCC: a view of format %d of an image of format %d (%ux%u, usage %#x) is outside its list (#%lld)", (int)f,
+             (int)tex->format, tex->width, tex->height, (unsigned)tex->usage, (long long)k + 1);
+}
+
 VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAspectFlags aspect, uint32_t level0,
                       uint32_t nlevels, uint32_t layer0, uint32_t nlayers, const VkComponentMapping& cm,
                       VkImageUsageFlags usage) {
     if (!usage || (usage & tex->usage) != usage) return VK_NULL_HANDLE;
+    if (tex->view_list_n && f != tex->format) dcc_view_outside(tex, f);   // (better-aa, RX_VK_DCC)
     // (block-texel views of a compressed image: one level; several layers where the driver takes them)
     const bool block_view = is_bc(tex->format) && !is_bc(f);
     if (block_view && nlevels != 1) return VK_NULL_HANDLE;
@@ -2601,6 +2702,16 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         if (dev.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
     }
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    // (better-aa, RX_VK_DCC) an uncompressed colour image's view formats declared: DCC on AMD (dcc_view_list)
+    VkImageFormatListCreateInfo fl{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    if (!depth && !is_bc(x.format) && !is_astc(x.format) && (flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) && !x.sparse) {
+        x.view_list_n = (uint8_t)dcc_view_list(x.format, x.view_list, 12);
+        if (x.view_list_n) {
+            fl.viewFormatCount = x.view_list_n;
+            fl.pViewFormats = x.view_list;
+            ci.pNext = &fl;
+        }
+    }
     ci.flags = flags;
     ci.imageType = x.type;
     ci.format = x.format;

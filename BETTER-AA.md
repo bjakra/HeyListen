@@ -68,6 +68,29 @@ back end without a rebuild.
   through a fixed table; an append writes only new places and publishes its count last, so a worker reads the entries
   it was handed with no lock. Kokiri, 1440p, two restarts each: 53.4 -> 54.9 fps, the picture the same.
   `RX_VK_UB_LOCK=1` brings the lock back for an A/B.
+- **Global memory reads through the page table first (GPU -3%).** The game's heaviest shaders read memory through pointers
+  the translator cannot tie to one buffer. Eden lowers each such read to a search over every storage buffer the stage has
+  (a nested chain of 64-bit range tests and branches), with HeyListen's guest page table only as the last fallback. The
+  driver's own statistics (`RX_VK_PIPE_STATS=<program keys>`, below) showed what that costs: Kokiri's most expensive draw,
+  one fullscreen pass at 720p, is 22,481 instructions with 1,341 branches for 421 such reads, and a compute pass 28,878
+  instructions with 689 spilled scalar registers. Now a read goes to the page table first (a range test, the table's
+  entry, the load), and the search is left only for what the table does not map. Both reach the same memory: the
+  table points at the mirrors the buffers are bound from. That 720p pass went from 0.38 to 0.26 ms and the compute pass
+  from 0.29 to 0.20 ms. Over the frame the GPU time went 13.5 -> 13.1 ms and the frame rate 60.3 -> 61.4 (four runs
+  each, the picture the same). On by default on RADV in stages that write no storage memory (`RX_VK_FOLLOW_FIRST=0`:
+  off, `=2`: every stage, 12.8 ms but no higher frame rate). It is part of the program cache's stamp, so a change of
+  it translates the shaders again.
+- **Finer recording segments on 16-thread CPUs (+3.4%).** The renderer's timeline (`RX_VK_TL_S`, `tools/tl_classify.py`)
+  showed the GPU idle while the Presentation Thread recorded medium command buffers alone, ~2 ms each. Fine segments
+  (up to 10 of ~128 draws, more than there are recorders) were on only under 16 hardware threads; now also at 16.
+  i5-12600KF, two runs each: 61.05 -> 63.15 fps (80-draw segments in one round: 62.4). `RX_VK_FINE_SEGMENTS=0`: off.
+- **Diagnostics added for the GPU work:** `RX_VK_PIPE_STATS=<key prefixes>` logs the driver's statistics of those
+  programs' pipelines (registers, spills, instructions, branches; `VK_KHR_pipeline_executable_properties`), and
+  `RX_VK_PIPE_IR=<folder>` writes their NIR, ACO IR and disassembly. `RX_VK_PROGRAM_CACHE_TAG=<tag>` gives a
+  translation switch a program cache of its own (`hookshot_programs_<tag>.bin`): one cache per A/B arm, so the arms do
+  not translate everything again on each start. For a clean A/B also set `RX_VK_NO_PREDICT=1` and
+  `MESA_SHADER_CACHE_MAX_SIZE=8G`: otherwise the background pipeline prediction keeps four threads compiling for many
+  minutes after a switch, and the frame rate drops from 60 to the mid 40s.
 - **Recompiler changes, exact but not faster here.** Tested and kept, but they measured inside the noise on this PC
   (the old binary 51.5, the new 51.8 fps, three restarts each), because the game's code is not on the frame's critical
   path here:

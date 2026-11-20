@@ -1821,15 +1821,194 @@ void op_cost_report(double frames) {
 
 void ubo_check_refs(uint32_t op, const uint8_t* a, uint32_t avail);   // (HL_UBO_CHECK: below)
 
+// (better-aa, RX_VK_REUSE_STATS=1: a measurement, off by default) How much of a dry pass's command stream repeats the last
+// one's: the question before memoising the dry pass or reusing recorded segments. Each dry pass's ops are hashed in chunks
+// of kChunk draws and dispatches (the parallel points' spacing), twice: "full" (every byte) and "shape" (the uniform data's
+// bytes left out: UPDATE_UB's, UBO_INLINE's, PUSH_CONST's data and UBO_CHECK's hashes; their place and size kept). A pass
+// is matched to an earlier one by the shape hash of its first chunk; each of its chunks is compared with that one's
+// chunk of the same index. Logged every 600 dry passes
+bool reuse_stats_on() {
+    static const bool on = getenv("RX_VK_REUSE_STATS") && atoi(getenv("RX_VK_REUSE_STATS")) != 0;
+    return on;
+}
+struct ReuseStats {
+    static constexpr int64_t kChunk = 32;
+    struct Pass {
+        std::vector<uint64_t> full, shape;
+    };
+    bool on;
+    uint64_t hf = 0x243F6A8885A308D3ull, hs = 0x13198A2E03707344ull;
+    int64_t draws = 0;
+    uint64_t bytes = 0, data_bytes = 0;
+    Pass cur;
+    std::vector<uint8_t> raw;   // (the pass's ops as they were: diffed op by op against earlier passes)
+    static uint64_t mix(uint64_t h, uint64_t w) {
+        h ^= w * 0x9E3779B97F4A7C15ull;
+        return (h << 27 | h >> 37) * 0xBF58476D1CE4E5B9ull;
+    }
+    static uint64_t hash_words(uint64_t h, const uint8_t* q, size_t n) {
+        for (size_t i = 0; i + 8 <= n; i += 8) {
+            uint64_t w;
+            std::memcpy(&w, q + i, 8);
+            h = mix(h, w);
+        }
+        return h;
+    }
+    explicit ReuseStats(bool dry) : on(dry && reuse_stats_on()) {}
+    void op(const nvn_op_hdr& h, const uint8_t* p) {
+        bytes += h.size;
+        raw.insert(raw.end(), p, p + h.size);
+        hf = hash_words(hf, p, h.size);
+        size_t keep = h.size;   // (the bytes the shape hash takes: the header and the payload's fixed part)
+        switch (h.op) {
+        case NOP_UPDATE_UB: keep = 8 + sizeof(nvn_p_update_ub); break;
+        case NOP_PUSH_CONST: keep = 8 + sizeof(nvn_p_push_const); break;
+        case NOP_UBO_INLINE: keep = 8 + sizeof(nvn_p_ubo_inline); break;
+        case NOP_UBO_CHECK: keep = 8 + offsetof(nvn_p_ubo_check, h_bind); break;
+        default: break;
+        }
+        keep = std::min<size_t>(keep, h.size) & ~size_t(7);
+        data_bytes += h.size - keep;
+        hs = hash_words(hs, p, keep);
+        if (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH ||
+            h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT)
+            if (++draws % kChunk == 0) close();
+    }
+    void close() {
+        cur.full.push_back(hf), cur.shape.push_back(hs);
+        hf = mix(hf, 1), hs = mix(hs, 1);
+    }
+    /// Against the earlier pass (of the last 32) whose opcodes agree with this one's the longest from the start: per opcode, the
+    /// ops alike and the 8-byte words of the payload that differ (word 0: the one after the header). Logged with the stats
+    void diff_ops() {
+        static std::deque<std::vector<uint8_t>> prev;
+        static int64_t ops_n, ops_same, lock_ops, diverged;
+        static std::map<std::pair<uint32_t, uint32_t>, int64_t> words;   // (opcode, word) -> differing
+        static std::map<uint32_t, std::pair<int64_t, int64_t>> per_op;    // opcode -> (seen, differing)
+        static int64_t n_pass;
+        auto walk = [&](const std::vector<uint8_t>& o, bool count) {
+            size_t i = 0, j = 0;
+            int64_t run = 0;
+            while (i + 8 <= raw.size() && j + 8 <= o.size()) {
+                nvn_op_hdr a, b;
+                std::memcpy(&a, &raw[i], 8), std::memcpy(&b, &o[j], 8);
+                if (a.op != b.op || a.size != b.size || a.size < 8) break;
+                run++;
+                if (count) {
+                    ops_n++;
+                    auto& po = per_op[a.op];
+                    po.first++;
+                    const bool same = std::memcmp(&raw[i], &o[j], a.size) == 0;
+                    ops_same += same;
+                    if (!same) {
+                        po.second++;
+                        for (uint32_t w = 8; w + 8 <= a.size; w += 8)
+                            if (std::memcmp(&raw[i + w], &o[j + w], 8)) words[{a.op, w / 8 - 1}]++;
+                    }
+                }
+                i += a.size, j += b.size;
+            }
+            if (count && i < raw.size()) diverged++;
+            return run;
+        };
+        int best = -1;
+        int64_t best_run = -1;
+        for (size_t k = 0; k < prev.size(); k++)
+            if (const int64_t r = walk(prev[k], false); r > best_run) best_run = r, best = (int)k;
+        if (best >= 0) lock_ops += walk(prev[best], true);
+        if (n_pass >= 300 && n_pass < 312) {   // (a few passes' first ops: opcode/size)
+            std::string seq;
+            for (size_t i = 0, k = 0; i + 8 <= raw.size() && k < 48; k++) {
+                nvn_op_hdr a;
+                std::memcpy(&a, &raw[i], 8);
+                char b[24];
+                snprintf(b, sizeof b, " %u/%u", a.op, a.size);
+                seq += b;
+                if (a.size < 8) break;
+                i += a.size;
+            }
+            logf("vk: reuse seq pass %lld (%zu bytes, %lld draws, best run %lld):%s", (long long)n_pass, raw.size(), (long long)draws,
+                 (long long)best_run, seq.c_str());
+        }
+        prev.push_back(raw);
+        if (prev.size() > 32) prev.pop_front();   // (~11 dry passes a frame in Kokiri: the last 3 frames')
+        if (++n_pass % 600 || !ops_n) return;
+        std::vector<std::pair<int64_t, std::pair<uint32_t, uint32_t>>> top;
+        for (auto& [k, v] : words) top.push_back({v, k});
+        std::sort(top.rbegin(), top.rend());
+        std::string t;
+        for (size_t k = 0; k < top.size() && k < 16; k++) {
+            char b[64];
+            snprintf(b, sizeof b, " op%u.w%u:%lld", top[k].second.first, top[k].second.second, (long long)top[k].first);
+            t += b;
+        }
+        std::string o;
+        for (auto& [op, v] : per_op)
+            if (v.second) {
+                char b[48];
+                snprintf(b, sizeof b, " op%u %lld/%lld", op, (long long)v.second, (long long)v.first);
+                o += b;
+            }
+        logf("vk: reuse diff (RX_VK_REUSE_STATS): ops compared in step %lld (%.1f%% alike), passes that went apart before "
+             "their end %lld of 600; differing words (opcode.word:count):%s", (long long)ops_n, ops_same * 100.0 / ops_n,
+             (long long)diverged, t.c_str());
+        logf("vk: reuse diff: opcodes differing/compared:%s", o.c_str());
+        ops_n = ops_same = lock_ops = diverged = 0, words.clear(), per_op.clear();
+    }
+    ~ReuseStats() {
+        if (!on) return;
+        if (draws % kChunk) close();
+        if (cur.shape.empty()) return;
+        static std::mutex mu;
+        static std::unordered_map<uint64_t, Pass> last;   // (by the first chunk's shape)
+        static int64_t passes, matched, chunks, same_full, same_shape, whole_full, whole_shape, prefix_full;
+        static uint64_t all_bytes, all_data;
+        std::lock_guard lk(mu);
+        passes++, chunks += (int64_t)cur.shape.size(), all_bytes += bytes, all_data += data_bytes;
+        auto it = last.find(cur.shape[0]);
+        diff_ops();
+        if (it != last.end()) {
+            matched++;
+            const Pass& o = it->second;
+            bool all_f = o.full.size() == cur.full.size(), all_s = o.shape.size() == cur.shape.size(), pre = true;
+            int64_t pre_n = 0;
+            for (size_t i = 0; i < cur.shape.size(); i++) {
+                const bool f = i < o.full.size() && o.full[i] == cur.full[i];
+                const bool sh = i < o.shape.size() && o.shape[i] == cur.shape[i];
+                same_full += f, same_shape += sh, all_f &= f, all_s &= sh;
+                if (pre && f) pre_n++;
+                else pre = false;
+            }
+            whole_full += all_f, whole_shape += all_s, prefix_full += pre_n;
+        }
+        if (last.size() > 256) last.clear();
+        last[cur.shape[0]] = std::move(cur);
+        if (passes % 600 == 0) {
+            const double c = chunks ? 100.0 / chunks : 0, m = matched ? 100.0 / matched : 0;
+            logf("vk: reuse stats (RX_VK_REUSE_STATS): %lld dry passes, %.1f%% matched an earlier one by their start; of all "
+                 "%lld chunks of %lld draws, the same bytes %.1f%%, the same but for uniform data %.1f%%, the same bytes from "
+                 "the start on %.1f%%; whole passes the same: bytes %.1f%%, but for uniform data %.1f%% (of those matched); "
+                 "%.2f MB a pass, %.1f%% of it uniform data",
+                 (long long)passes, matched * 100.0 / passes, (long long)chunks, (long long)kChunk, same_full * c, same_shape * c,
+                 prefix_full * c, whole_full * m, whole_shape * m, all_bytes / (double)passes / 1048576.0,
+                 all_bytes ? all_data * 100.0 / all_bytes : 0.0);
+            passes = matched = chunks = same_full = same_shape = whole_full = whole_shape = prefix_full = 0;
+            all_bytes = all_data = 0;
+        }
+    }
+};
+
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
     OpTimer op_timer(dry, worker);
+    ReuseStats reuse(dry);   // (better-aa, RX_VK_REUSE_STATS)
     for (;;) {
         if (p == end) return;
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
         if (op_timer.on) op_timer.at(h.op);
+        if (reuse.on) reuse.op(h, p);
         const uint8_t* a = p + 8;
         const uint32_t avail = h.size - 8;
         // (the part's end maybe_split asked for: here, right before a draw with a vertex stage that will be recorded, so that the next
@@ -2533,7 +2712,9 @@ constexpr int kMaxBatch = 12;   // (the arrays' size; seg_cap() is the number a 
 bool fine_segments() {
     static const bool v = [] {
         const char* e = getenv("RX_VK_FINE_SEGMENTS");
-        const bool on = e ? atoi(e) != 0 : std::thread::hardware_concurrency() < 16;
+        // (better-aa: and at 16 hardware threads too: i5-12600KF, Kokiri 1440p, 61.05 -> 63.15 fps over two runs each, the
+        // GPU's idle gaps shorter: medium command buffers the replay thread recorded alone, ~2 ms each, now split)
+        const bool on = e ? atoi(e) != 0 : std::thread::hardware_concurrency() <= 16;
         logf("vk: a big command buffer's segments: %s (RX_VK_FINE_SEGMENTS)", on ? "up to 10 of ~128 draws, more than recorders" : "one round, up to 6 of ~160 draws");
         return on;
     }();
@@ -2928,7 +3109,9 @@ const uint8_t* upscale_go_on(VkCommandBuffer& cmd, const uint8_t* at, bool may_s
 // whole command buffer is recorded here, into rec_cur, as a one-segment one is.
 bool seg_early_on() {
     static const bool v = getenv("RX_VK_SEG_EARLY") && atoi(getenv("RX_VK_SEG_EARLY")) != 0;
-    return v;
+    static TuneHot live{"seg_early", -1};   // (better-aa, RX_VK_TUNE seg_early=0/1: the environment's choice overridden, live)
+    const int t = live.get();
+    return t < 0 ? v : t != 0;
 }
 // ---- (stream C1) RX_VK_EARLY_GPU: the GPU given a big command buffer's work as it is recorded, not once its dry pass is over ----
 // At the bench's settings on the PC 3050 (17 zones, 2560x1440, 3D at 100%) the GPU works 18.8 ms of a 24.4 ms frame and sits idle
@@ -7313,5 +7496,7 @@ bool replay_tex_storage_in(uint64_t gpu, uint64_t size) { return tex_pages_any(g
 
 /// (heylisten) the GPU's own time so far, ns (the performance summary's per-frame GPU time, perf_report.cpp)
 int64_t gpu_time_ns() { return st_gpu_ns; }
+/// (better-aa, RX_VK_RB_ORDER_LOG) the replay thread's draws and dispatches so far
+uint64_t rb_order_serial() { return occ_serial; }
 
 } // namespace mkwvk

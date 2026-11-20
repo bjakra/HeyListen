@@ -89,6 +89,7 @@ struct Device {
     std::vector<VkImageView> swap_views;   // (hookshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     VkFormat swap_view_format = VK_FORMAT_UNDEFINED;   // (their format: the UNORM one of an sRGB swapchain when it can be)
     bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
+    bool pipeline_stats = false;   // (better-aa, VK_KHR_pipeline_executable_properties: with RX_VK_PIPE_STATS only)
     bool calibrated_ts = false;  // (VK_EXT_calibrated_timestamps, asked for only with RX_VK_TL / RX_VK_TL_S: the GPU's recordings on the host clock)
     std::vector<VkSemaphore> swap_rendered;   // present waits belong to acquired images, not frame slots
     std::mutex present_mu;   // (the swapchain: presents and resizes)

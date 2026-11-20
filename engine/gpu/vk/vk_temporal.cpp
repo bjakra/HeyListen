@@ -1057,6 +1057,7 @@ void temporal_present_work(VkCommandBuffer cmd) {
     descriptors_disturbed();
 }
 
+uint64_t rb_order_serial();   // (vk_replay.cpp)
 bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                       VkImageView out_view, uint32_t out_level) {
     const int mode = temporal_mode();
@@ -1064,7 +1065,8 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     {   // (better-aa, RX_VK_RB_ORDER_LOG: vk_memory.cpp rb_hazard_locked)
         static const bool order_log = getenv("RX_VK_RB_ORDER_LOG") && atoi(getenv("RX_VK_RB_ORDER_LOG")) != 0;
         if (order_log && texture_frame_no() % 300 == 0)
-            logf("vk: rb-order frame %llu: the upscale (%016llx)", (unsigned long long)texture_frame_no(), (unsigned long long)key);
+            logf("vk: rb-order frame %llu: the upscale (%016llx) (draw %llu)", (unsigned long long)texture_frame_no(), (unsigned long long)key,
+                 (unsigned long long)rb_order_serial());
     }
     State& s = st();
     std::lock_guard lk(s.mu);

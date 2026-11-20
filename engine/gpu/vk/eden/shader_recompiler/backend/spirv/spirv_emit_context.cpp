@@ -1470,9 +1470,28 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id func_id{OpFunction(type, inline_here && !noinline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
                                     function_type)};
         const Id addr{OpFunctionParameter(U64)};
+        // (better-aa, RX_VK_FOLLOW_FIRST=1: the page table first, the storage buffers' search only for what it does not map) The
+        // search tests every storage buffer the stage has, nested: a stage with a dozen of them makes each global load a chain of
+        // 64-bit range tests and branches, and the game's heaviest passes have hundreds of loads (Kokiri: a fullscreen pass at
+        // 720p with 421 of them, 22k instructions, 1341 branches, 0.38 ms). Through the table a load is a range test, the
+        // table's entry and the load. Both read the same memory (the table points at the mirrors the buffers are bound from).
+        // =1: only in a stage that writes no storage memory; =2: in every stage. A load through the table and a store through a
+        // buffer may be the same memory: Mesa's NIR tracks global and storage buffer accesses together (nir_deref.c,
+        // nir_opt_load_store_vectorize.c: they may alias unless both are restrict, and nothing here is) and ACO orders both as
+        // buffer memory, and no binding here is Restrict or NonWritable. Other drivers' compilers not looked at. RADV's default is 1
+        // (mma_layout.h follow_first); Kokiri at 1440p: GPU 13.5 -> 13.1 ms a frame, 60.3 -> 61.4 fps over four runs each, the
+        // picture the same. =2 measured 12.8 ms, the frame rate no higher (the frame waits on the recording, not on the GPU)
+        const int ff_level{Shader::Backend::SPIRV::follow_first};
+        bool writes_storage{info.stores_global_memory};
+        for (const auto& d : info.storage_buffers_descriptors) writes_storage |= d.is_written;
+        const bool table_first{ff_level >= 1 && follow_pointers && gp_level >= 3 && (!writes_storage || ff_level >= 2)};
+        if (table_first) {
+            AddLabel();
+            guest_lookup(addr, 1U << shift, [&](Id target) { OpReturnValue(psb_load(type, target, 4U)); });
+        }
         define_body(ssbo_member, addr, element_pointer, shift,
-                    [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
-        guest_lookup(addr, 1U << shift, [&](Id target) {
+                    [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); }, !table_first);
+        if (!table_first) guest_lookup(addr, 1U << shift, [&](Id target) {
             if (gp_level >= 3) OpReturnValue(psb_load(type, target, 4U));
             else OpReturnValue(ConstantNull(type));
         });
