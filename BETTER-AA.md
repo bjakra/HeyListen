@@ -113,6 +113,15 @@ back end without a rebuild.
   `RX_VK_CAPTURE_SCAN_SPLIT=1` or `RX_VK_CAPTURE_PRECOPY=1`), 96-draw segments, `RX_VK_SEG_MAX=12` (-10%): inside the
   noise or slower. `RX_VK_MISS_LOG=2` puts the miss log in vertex and fragment stages too, `RX_VK_MISS_KEEP=1` keeps its
   counts from the start instead of from the capture's frame.
+- **Tried after Resizable BAR, no gain (75 fps, GPU 10.8 ms).** The frame is now the Presentation Thread's serial loop
+  (`HOS_JOBTRACE` + `tools/bench/critpath.py`, `chainb.py`: 13.2 of a 13.8 ms frame, its submits 11.8 ms) with the GPU ring
+  91% busy (`gpu_scheduler` trace: ~12.1 ms a frame, ~31 jobs, the idle ~1 ms in one gap a frame while the next work is
+  recorded). Inside the noise or slower, three restarts each: no batching (`RX_VK_BATCH=0`), at most 8 command buffers a
+  batch, sending held submits while the GPU is still on its last batch (a test knob, depth 2/3), the segments batched too
+  (one kernel job instead of ~20 a frame: 74.8 -> 59.9 fps, 66.3 at depth 2, 73.2 at depth 3: held work starves the
+  ring), `RADV_PERFTEST=cswave32` / `localbos`, the left-out-range check without its mutex (~10% of the segment
+  workers' time in perf, none of the frame), FSR 4 in wave64 (`FSR4_VK_INT8_MODEL_WAVE32=0`, GPU -0.1 ms). FSR 4 Native
+  AA is 2.8 ms of the GPU frame (`RX_VK_PASS_TIMING=1`), most of it its pre- and post-pass.
 - **Recompiler changes, exact but not faster here.** Tested and kept, but they measured inside the noise on this PC
   (the old binary 51.5, the new 51.8 fps, three restarts each), because the game's code is not on the frame's critical
   path here:
