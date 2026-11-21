@@ -43,6 +43,12 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   The cache now stores every transcode (`RX_VK_BC_CACHE_LAZY=1` is upstream's): walking Castle Town's gate <-> market at
   1440p on an RX 6800, the 1% low went 24.4 -> 31.2 fps and frames over 33 ms 35 -> 6.5 a minute. Up to 1 GB of system RAM
   (`RX_VK_BC_CACHE_MB`).
+- **The game's frame threads on the P-cores of a Linux hybrid CPU** (host `hos_thread.c`). sead's main thread, the BaseProc
+  executors, the ModuleSystem workers and the Presentation Thread are kept to the cores `/sys/devices/cpu_core/cpus` lists when
+  the kernel also lists E-cores (the threads they start inherit it); left to the scheduler a fifth of the game's work ran on
+  the E-cores. i5-12600KF + RX 6800,
+  1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). Measured with the
+  host's `HOS_PIN` (the same masks); `HOS_PCORE_GAME=0`: as before.
 - **The replay thread (`RX_VK_ASYNC=1`, opt-in) made usable** (after Longshot 82886e89). On the P-cores on Linux (the host's
   reserved core there is an E-core); the capture of what the game wrote up to its CPU signal is taken at the signal, on the
   game's thread; a present waits for that signal and is held while the presentation queue waits for it; a catch-up (a

@@ -773,6 +773,50 @@ uint64_t hos_reserved_cpus(void) {
     return mask;
 }
 
+/* (better-aa) A CPU list as the kernel writes it ("0-11", "0,2,4-7"), as a mask of the first 64 logical processors */
+static uint64_t parse_cpu_list(const char *s) {
+    uint64_t m = 0;
+    while (s && *s) {
+        char *end;
+        const long a = strtol(s, &end, 10);
+        if (end == s) break;
+        long b = a;
+        if (*end == '-') {
+            const char *q = end + 1;
+            b = strtol(q, &end, 10);
+            if (end == q) break;
+        }
+        for (long c = a; c <= b && c < 64; c++)
+            if (c >= 0) m |= 1ull << c;
+        s = *end == ',' ? end + 1 : end;
+        if (*s == '\n') break;
+    }
+    return m;
+}
+/* (better-aa) On Linux with a CPU of two kinds (Intel's hybrid ones: the kernel lists the P-cores in
+   /sys/devices/cpu_core/cpus and the E-cores in /sys/devices/cpu_atom/cpus), the game's frame threads (sead's main thread,
+   the BaseProc executors, the ModuleSystem workers and the Presentation Thread) run on the P-cores only. The threads they start
+   inherit that (Linux), so most of the game's threads end there; those started before (the host's, audio) keep every core.
+   HOS_PIN with the same masks behaves the same way, and that is what was measured. Left to the scheduler, a fifth of the game's work ran on the E-cores at about half
+   the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri
+   76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this */
+static uint64_t pcore_game_mask(void) {
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    if (getenv("HOS_PCORE_GAME") && !atoi(getenv("HOS_PCORE_GAME"))) return 0;
+    if (access("/sys/devices/cpu_atom/cpus", R_OK) != 0) return 0;
+    FILE *f = fopen("/sys/devices/cpu_core/cpus", "r");
+    if (!f) return 0;
+    char buf[256] = {0};
+    const char *got = fgets(buf, sizeof buf, f);
+    fclose(f);
+    return got ? parse_cpu_list(buf) : 0;
+#else
+    return 0;
+#endif
+}
+static int pcore_game_thread(const char *name) {
+    return strstr(name, "MainThread") || strstr(name, "BaseProc") || strstr(name, "ModuleSystem") || strstr(name, "Presentation");
+}
 void hos_thread_pin(void *h, const char *name) {
     const uint64_t reserved = hos_reserved_cpus();
     if (reserved) {
@@ -782,15 +826,19 @@ void hos_thread_pin(void *h, const char *name) {
     }
     static NameSpec pins[24], prios[24];
     static int npins = -1, nprios;
+    static uint64_t pcores;
     static SRWLOCK lk = SRWLOCK_INIT;
     AcquireSRWLockExclusive(&lk);
     if (npins < 0) {
         npins = parse_name_specs(getenv("HOS_PIN"), pins, 24, 16);
         nprios = parse_name_specs(getenv("HOS_PRIO"), prios, 24, 10);
+        pcores = pcore_game_mask() & ~reserved;
+        if (pcores) hos_log("the game's frame threads on the P-cores (%#llx; HOS_PCORE_GAME=0: every core)", (unsigned long long)pcores);
     }
     ReleaseSRWLockExclusive(&lk);
     const NameSpec *p = match_name_spec(pins, npins, name);
     if (p && p->value) SetThreadAffinityMask(h, (DWORD_PTR)p->value);
+    else if (pcores && pcore_game_thread(name)) SetThreadAffinityMask(h, (DWORD_PTR)pcores);
     static const int levels[5] = {THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
                                   THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST};
     if ((p = match_name_spec(prios, nprios, name)) && p->value >= -2 && p->value <= 2)

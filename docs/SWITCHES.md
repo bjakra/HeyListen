@@ -10,7 +10,7 @@ python -I engine/scripts/list_switches.py
 
 and commit both files. A test (`engine/tests/test_switches_documented.py`) fails when a switch read in the source is missing here or the data file is out of date.
 
-1332 switches: 52 players may be told to use, 355 diagnostic, 925 developer-only; 1126 have a real explanation and 206 are marked `undocumented`.
+1333 switches: 52 players may be told to use, 355 diagnostic, 926 developer-only; 1127 have a real explanation and 206 are marked `undocumented`.
 
 ## How to set a switch
 
@@ -70,7 +70,7 @@ The entries below say what each one does, its values and default, and when it is
 | [Audio](#audio) | 14 | 5 | 9 | 0 |
 | [Input and controllers](#input-and-controllers) | 13 | 1 | 12 | 0 |
 | [Native engine (`HL_*`)](#native-engine-hl_) | 65 | 1 | 25 | 39 |
-| [Host and OS (`HOS_*` and the system's variables)](#host-and-os-hos_-and-the-systems-variables) | 123 | 8 | 0 | 115 |
+| [Host and OS (`HOS_*` and the system's variables)](#host-and-os-hos_-and-the-systems-variables) | 124 | 8 | 0 | 116 |
 | [Telemetry and crash reports](#telemetry-and-crash-reports) | 12 | 0 | 12 | 0 |
 | [Diagnostics and logging](#diagnostics-and-logging) | 283 | 0 | 283 | 0 |
 | [Build and lift time (`A64_*`, `RX_*` and `HOOKSHOT_*` the builder reads)](#build-and-lift-time-a64_-rx_-and-hookshot_-the-builder-reads) | 93 | 0 | 0 | 93 |
@@ -653,7 +653,7 @@ Over the options file: the output resolution (0 2048x1152, 1 2560x1440, 2 3840x2
 
 **When a player would use it:** For a bug report or a measurement: set it only when a maintainer asks, and keep the log, dump or numbers it writes.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1096`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1144`.
 
 #### `HOS_REALTIME_WINDOW` - diagnostic
 
@@ -8353,7 +8353,7 @@ HL_STREAM_PAGES=1: which decoded pages still hold the decoder's bytes, and the r
 
 ## Host and OS (`HOS_*` and the system's variables)
 
-123 switches of the Horizon OS layer, the window and the system.
+124 switches of the Horizon OS layer, the window and the system.
 
 ### Frame rate and timing
 
@@ -8497,7 +8497,7 @@ TICK-062 A10, HOS_CORE_COUNT=1 (diagnostic, no behaviour change): per guest thre
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1003`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1051`.
 
 #### `HOS_CV_SIGNAL_FAST` - developer
 
@@ -8597,7 +8597,7 @@ HOS_POLL_SLEEP_NS=<ns> (experiment): a guest sleep of up to 100 us lasts at most
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1046`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1094`.
 
 #### `HOS_PRIO` - developer
 
@@ -8607,7 +8607,7 @@ The first matching entry wins. (2026-10-20: the castle's MainThread and ModuleSy
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:789`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:834`.
 
 #### `HOS_RESERVE_CORE` - developer
 
@@ -8637,7 +8637,7 @@ The game's sleeps under a millisecond (SleepThread): `0` all short sleeps yield 
 
 **When a player would use it:** Short sleeps cost CPU time: `=1` waits on the timer instead of yielding.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:900` and 1 more place.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:948` and 1 more place.
 
 #### `HOS_SPIN_ALWAYS` - developer
 
@@ -8677,7 +8677,7 @@ No virtual cores; the cores the game sees (6); no core kept for the replay (one 
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1378`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1426`.
 
 #### `HOS_VCORE_ESCAPE_EQ_US` - developer
 
@@ -8687,7 +8687,7 @@ A waiter better than a holder asks it to give the core up (vc_kick), which it do
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1637`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1685`.
 
 #### `HOS_VCORE_ESCAPE_US` - developer
 
@@ -8697,7 +8697,7 @@ A waiter better than a holder asks it to give the core up (vc_kick), which it do
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1638`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1686`.
 
 #### `HOS_VCORE_SLICE_US` - developer
 
@@ -8707,7 +8707,7 @@ The worst holder worse than t on a core t may use gives it up at its next checkp
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1639`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1687`.
 
 #### `HOS_VCORE_STARVE_US` - developer
 
@@ -8717,7 +8717,7 @@ A game thread that has waited this long for a virtual core (default 1000000, 1 s
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1640`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1688`.
 
 #### `HOS_VCORE_WHERE` - developer
 
@@ -8727,7 +8727,7 @@ HOS_VCORE_WHERE=all (diagnostic): at each of the first 12 escapes, where every t
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1588`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1636`.
 
 #### `HOS_WEB_SPIN_SLEEP` - developer
 
@@ -8737,7 +8737,7 @@ The web has no high-resolution timer, and its clock is a call into JavaScript: s
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:880`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:928`.
 
 #### `MESA_VK_ENABLE_SUBMIT_THREAD` - developer
 
@@ -9013,7 +9013,7 @@ The API is synchronous and single-stream: mf_av1_decode takes one temporal unit 
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1833`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1881`.
 
 #### `HOS_COND_RECORD` - developer
 
@@ -9333,7 +9333,7 @@ TICK-062 A4/B7, HOS_OBJ_PACK=1: the slot pointer and its key side by side (strid
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:798`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:846`.
 
 #### `HOS_OOT_CHEATS` - player
 
@@ -9383,7 +9383,17 @@ undocumented: host/hos_main.c:999 (in `oot_teleport()`) reads it as a text value
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:850`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:898`.
+
+#### `HOS_PCORE_GAME` - developer
+
+Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.
+
+**Values:** on or off (0, false, off, no and empty are off); the description names `0`. **Default:** off (unset).
+
+**When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
+
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:805`.
 
 #### `HOS_PGO` - developer
 
@@ -9397,13 +9407,13 @@ In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.d
 
 #### `HOS_PIN` - developer
 
-HOS_PIN=<name part>=<hex mask>,...[,*=<hex mask>] (experiment): host CPU affinity by thread name (game threads as they are named or started, host threads as they register); "*" for every other named thread. The first matching entry wins.
+The threads they start inherit that (Linux), so most of the game's threads end there; those started before (the host's, audio) keep every core. HOS_PIN with the same masks behaves the same way, and that is what was measured. Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.
 
-**Values:** on or off (0, false, off, no and empty are off). **Default:** off (unset).
+**Values:** on or off (0, false, off, no and empty are off); the description names `0`. **Default:** off (unset).
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:788`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:833`.
 
 #### `HOS_POWER_THROTTLING` - developer
 
@@ -9503,7 +9513,7 @@ Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1
 
 **When a player would use it:** Not for players: an internal experiment or A/B switch, changed only by a developer.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1196`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1244`.
 
 #### `HOS_VI_DOUBLE` - developer
 
@@ -9977,7 +9987,7 @@ HOS_SLEEP_LOG=1 (diagnostic): guest sleeps by caller (LR) every 5 s: count, aske
 
 **When a player would use it:** For a bug report or a measurement: set it only when a maintainer asks, and keep the log, dump or numbers it writes.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1051` and 1 more place.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1099` and 1 more place.
 
 #### `HOS_SPEED_LOG` - diagnostic
 
@@ -10007,7 +10017,7 @@ HOS_TICK_LOG=1 (diagnostic): who reads the clock, by caller (LR), every 5 s.
 
 **When a player would use it:** For a bug report or a measurement: set it only when a maintainer asks, and keep the log, dump or numbers it writes.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1182`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1230`.
 
 #### `HOS_TLS_TRACE` - diagnostic
 
@@ -10037,7 +10047,7 @@ HOS_VCORE_LOG=1 (diagnostic): with the "vcores:" line, each thread that waited f
 
 **When a player would use it:** For a bug report or a measurement: set it only when a maintainer asks, and keep the log, dump or numbers it writes.
 
-**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1450`.
+**Set it:** In `hookshot_env.txt`, or in the environment. **Read at:** `host/hos_thread.c:1498`.
 
 #### `HOS_VIDEO_LOG` - diagnostic
 

@@ -2,7 +2,7 @@
  "schema": 1,
  "generated_by": "engine/scripts/list_switches.py",
  "scope": "C, C++ and headers under engine/ (engine/tests and vendored trees other than a64-kit excluded) and the Python the builder, the lifter and the scripts run: getenv, std::getenv, _wgetenv, the code's own env helpers and table-driven reads, and os.environ.",
- "count": 1332,
+ "count": 1333,
  "switches": [
   {
    "name": "A64_DEVIRT",
@@ -3819,7 +3819,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1833
+     "line": 1881
     }
    ],
    "default": "unset",
@@ -3882,7 +3882,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1003
+     "line": 1051
     }
    ],
    "default": "off (unset)",
@@ -6634,7 +6634,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 798
+     "line": 846
     }
    ],
    "default": "unset",
@@ -6743,7 +6743,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 850
+     "line": 898
     }
    ],
    "default": "unset",
@@ -6798,6 +6798,27 @@
    "comment": "QueryMemoryInfo below, and svc GetInfo's used memory (hos_svc.c). Never more than the console's total: nothing refuses AllocateMemoryPages by default (HOS_PAGES_LIMIT), and past the total the game's free = total - used would wrap to a huge figure and it would map without limit again (HeyListen, owner's rule 2026-11-15) the default by the PC's RAM: on the RTX 5070 PC (64 GB) the A/B measured castle-move +3% and kokiri-idle -5% with it, so it is on only where memory is short: under 32 GB of RAM (16 GB PCs, the Deck), off from 32 GB. HOS_MEMINFO_OLD=0 / 1 decides either way.",
    "documented_in": "development.md",
    "source": "development.md",
+   "documented": true,
+   "set_via": "In `hookshot_env.txt`, or in the environment.",
+   "use": null
+  },
+  {
+   "name": "HOS_PCORE_GAME",
+   "area": "host",
+   "group": "System and services",
+   "audience": "developer",
+   "files": [
+    {
+     "path": "host/hos_thread.c",
+     "line": 805
+    }
+   ],
+   "default": "off (unset)",
+   "values": "on or off (0, false, off, no and empty are off); the description names `0`",
+   "explanation": "Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.",
+   "comment": "Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.",
+   "documented_in": null,
+   "source": "comment at host/hos_thread.c",
    "documented": true,
    "set_via": "In `hookshot_env.txt`, or in the environment.",
    "use": null
@@ -6860,13 +6881,13 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 788
+     "line": 833
     }
    ],
    "default": "off (unset)",
-   "values": "on or off (0, false, off, no and empty are off)",
-   "explanation": "HOS_PIN=<name part>=<hex mask>,...[,*=<hex mask>] (experiment): host CPU affinity by thread name (game threads as they are named or started, host threads as they register); \"*\" for every other named thread. The first matching entry wins.",
-   "comment": "HOS_PIN=<name part>=<hex mask>,...[,*=<hex mask>] (experiment): host CPU affinity by thread name (game threads as they are named or started, host threads as they register); \"*\" for every other named thread. The first matching entry wins.",
+   "values": "on or off (0, false, off, no and empty are off); the description names `0`",
+   "explanation": "The threads they start inherit that (Linux), so most of the game's threads end there; those started before (the host's, audio) keep every core. HOS_PIN with the same masks behaves the same way, and that is what was measured. Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.",
+   "comment": "The threads they start inherit that (Linux), so most of the game's threads end there; those started before (the host's, audio) keep every core. HOS_PIN with the same masks behaves the same way, and that is what was measured. Left to the scheduler, a fifth of the game's work ran on the E-cores at about half the speed (perf, Castle Town). i5-12600KF + RX 6800, 1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). 0 when the CPU is of one kind. HOS_PCORE_GAME=0: as before; HOS_PIN names a thread over this.",
    "documented_in": null,
    "source": "comment at host/hos_thread.c",
    "documented": true,
@@ -6902,7 +6923,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1046
+     "line": 1094
     }
    ],
    "default": "unset",
@@ -7154,7 +7175,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1096
+     "line": 1144
     }
    ],
    "default": "off (unset)",
@@ -7196,7 +7217,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 789
+     "line": 834
     }
    ],
    "default": "off (unset)",
@@ -7673,7 +7694,7 @@
     },
     {
      "path": "host/hos_thread.c",
-     "line": 914
+     "line": 962
     }
    ],
    "default": "unset",
@@ -7694,11 +7715,11 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 900
+     "line": 948
     },
     {
      "path": "host/hos_thread.c",
-     "line": 902
+     "line": 950
     }
    ],
    "default": "off (unset)",
@@ -7740,11 +7761,11 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1051
+     "line": 1099
     },
     {
      "path": "host/hos_thread.c",
-     "line": 1123
+     "line": 1171
     }
    ],
    "default": "off (unset)",
@@ -8075,7 +8096,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1196
+     "line": 1244
     }
    ],
    "default": "off (unset)",
@@ -8096,7 +8117,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1182
+     "line": 1230
     }
    ],
    "default": "off (unset)",
@@ -8159,7 +8180,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1378
+     "line": 1426
     }
    ],
    "default": "unset",
@@ -8180,7 +8201,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1637
+     "line": 1685
     }
    ],
    "default": "unset",
@@ -8201,7 +8222,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1638
+     "line": 1686
     }
    ],
    "default": "unset",
@@ -8222,7 +8243,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1450
+     "line": 1498
     }
    ],
    "default": "off (unset)",
@@ -8243,7 +8264,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1639
+     "line": 1687
     }
    ],
    "default": "unset",
@@ -8264,7 +8285,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1640
+     "line": 1688
     }
    ],
    "default": "unset",
@@ -8285,7 +8306,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 1588
+     "line": 1636
     }
    ],
    "default": "off (unset)",
@@ -8583,7 +8604,7 @@
    "files": [
     {
      "path": "host/hos_thread.c",
-     "line": 880
+     "line": 928
     }
    ],
    "default": "off (unset)",
