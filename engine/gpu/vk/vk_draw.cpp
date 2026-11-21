@@ -719,13 +719,24 @@ bool pcache_misses_only() {
 // size: data the cache took in since. The pipeline creation feedback cannot tell the new ones apart: NVIDIA's driver reports
 // most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
 std::atomic<size_t> pcache_saved_size{0};
+/// (better-aa) RX_VK_PROGRAM_CACHE_TAG=<tag> (vk_shader.cpp) names the pipeline files too: <name>_<tag>.bin for the driver's cache,
+/// the pipeline and compute notes and the ledger. Shared, each side of an A/B of translation switches wrote them over the
+/// other's, and one side built ~3000 pipelines in every measured run (188 s of compiling in all); with its own, its later runs
+/// load them (~0.4 s)
+std::string pipe_file_name(const char* name) {
+    const char* const tag = getenv("RX_VK_PROGRAM_CACHE_TAG");
+    if (!tag || !*tag) return name;
+    std::string s(name);
+    const size_t dot = s.rfind('.');
+    return s.substr(0, dot) + "_" + tag + s.substr(dot);
+}
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     dir = dir.substr(0, dir.find_last_of("\\/") + 1);
-    pcache_path = dir + "mkw_vk_pipelines.bin";
+    pcache_path = dir + pipe_file_name("mkw_vk_pipelines.bin");
     std::vector<uint8_t> data;
     if (FILE* f = fopen(pcache_path.c_str(), "rb")) {
         _fseeki64(f, 0, SEEK_END);
@@ -1201,7 +1212,7 @@ std::string pipe_notes_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
+    return dir.substr(0, dir.find_last_of("\\/") + 1) + pipe_file_name("hookshot_pipelines.bin");
 }
 
 // (TICK-008) The notes file, format 2. A note is a program (key, variant) with the draw state its pipeline was made for; it holds no
@@ -1405,7 +1416,7 @@ std::string computes_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_computes.bin";
+    return dir.substr(0, dir.find_last_of("\\/") + 1) + pipe_file_name("hookshot_computes.bin");
 }
 std::unordered_set<uint64_t> computes_read() {
     std::unordered_set<uint64_t> keys;
@@ -1877,7 +1888,7 @@ std::string ledger_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_compiled.bin";
+    return dir.substr(0, dir.find_last_of("\\/") + 1) + pipe_file_name("hookshot_compiled.bin");
 }
 uint64_t ledger_context() {
     uint64_t h = 0xCBF29CE484222325ull;
