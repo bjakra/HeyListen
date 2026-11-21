@@ -43,6 +43,13 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   The cache now stores every transcode (`RX_VK_BC_CACHE_LAZY=1` is upstream's): walking Castle Town's gate <-> market at
   1440p on an RX 6800, the 1% low went 24.4 -> 31.2 fps and frames over 33 ms 35 -> 6.5 a minute. Up to 1 GB of system RAM
   (`RX_VK_BC_CACHE_MB`).
+- **The replay thread (`RX_VK_ASYNC=1`, opt-in) made usable** (after Longshot 82886e89). On the P-cores on Linux (the host's
+  reserved core there is an E-core); the capture of what the game wrote up to its CPU signal is taken at the signal, on the
+  game's thread; a present waits for that signal and is held while the presentation queue waits for it; a catch-up (a
+  readback, a queue finish) waits for the jobs handed over before it and forces no queue past its wait, and readbacks do not
+  catch up. RX 6800, i5-12600KF: Castle Town 48.3 -> 60.5 fps with the thread (the submitting thread: 59.8; 1% low 41.0
+  against 33.3), Kokiri 49.3 -> 72.0 (the submitting thread: 76.3), so it stays off by default. Flashes (RX_VK_FLASH): 2 dark
+  frames just after the load in ~2500 Kokiri frames, none in town; the submitting thread none.
 - **The compute mesh fallback's records line after line** (Longshot 55e8fbd5, ported). On Linux RDNA 2 the vegetation's task and
   mesh programs run as compute (native mesh shaders hang the GPU there, issue 51); their records were written record by
   record, so neighbouring threads wrote words a record apart. `RX_VK_MESH_FB_LAYOUT` (soa by default; aos: as before).
@@ -202,5 +209,5 @@ HeyListen is GPL-3.0-or-later. `vk_antilag.*`, `vk_fsr3fi.*`, `vk_builtin_spv.*`
 `scripts/fsr3_shaders.py` and the frame generation changes in `vk_framegen.cpp`, `vk_draw.cpp` and `vk_fsr3_inputs.cpp`
 are ported from [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) (commit 868f6be871, GPL-3.0), as are
 `host/oot_tex_compact.*` and `nx2/oot_patches.py`'s texture compaction patch (7b229f66), the mesh fallback's line layout
-(55e8fbd5) and six replay-thread costs (6112edb6), so this fork
+(55e8fbd5), six replay-thread costs (6112edb6) and the render thread's capture at the CPU signal (82886e89), so this fork
 as a whole is distributed under GPL-3.0. AMD's FidelityFX SDK sources are MIT (`engine/third_party/fidelityfx-sdk`).
