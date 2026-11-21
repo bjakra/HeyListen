@@ -4486,6 +4486,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         memory_begin_submission();
         full_barrier(first.cmd, "barrier (recording start)");
         rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0, part_end_wanted = false;
+        texture_prefetch();   // (HeyListen, RX_VK_PREFETCH_MS: the textures the game made since, into this recording's uploads)
     }
     VkCommandBuffer cmd = rec_cur->cmd;
     const uint8_t* stop = nullptr;
@@ -4984,7 +4985,10 @@ bool tex_pages_any(uint64_t gpu, uint64_t size) {
     }
     return false;
 }
-void texture_created_of(const nvn_tex* t) { tex_pages_add(t, +1); }
+void texture_created_of(const nvn_tex* t) {
+    tex_pages_add(t, +1);
+    texture_prefetch_note(t);
+}
 uint64_t fence();
 // ---- (stream R2) RX_VK_RB_PROF=1: every CPU read of GPU results (invalidate) timed by phase, and what it waited for, by the
 // thread that read and by range; a line every 300 presents. Phases: 0 the ticket's wait for the replay section in progress
@@ -7425,6 +7429,7 @@ void present(const nvn_tex* t, const int crop[4]) {
 void texture_released_of(const nvn_tex* t) {
     if (!t) return;
     tex_pages_add(t, -1);
+    texture_prefetch_released(t);
     if (!async_on()) {
         // (PR 430: after the stopped work that may use it, when it goes on. The lock is held_mu, only while queues are
         // stopped: sync_order_mu, taken on every release, made the thread finalizing textures (OptimizeChangeBank) wait for whole

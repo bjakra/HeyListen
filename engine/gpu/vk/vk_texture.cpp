@@ -3346,6 +3346,7 @@ unsigned view_layer(const nvn_view* v) {
     return v && v->set_layers ? v->min_layer : 0;
 }
 
+void texture_prefetch_made(uint64_t gpu);   // (vk_draw.cpp, RX_VK_PREFETCH_LOG)
 Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     PROF_HOT(PROF_TEXGET);
     if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return nullptr;
@@ -3379,6 +3380,7 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     if (it == textures.end()) {
         tex = create(k, t, fi.format, fi.astc, bw, bh, bpb, !for_sampling);
         if (!tex) return nullptr;
+        if (fi.astc) texture_prefetch_made(tex->gpu);
         static const int64_t log_from = getenv("RX_VK_LOG_MADE") ? atoll(getenv("RX_VK_LOG_MADE")) : -1;
         static int made_logged;
         if (log_from >= 0 && (int64_t)frame_no >= log_from && made_logged++ < 300) {
@@ -5876,6 +5878,15 @@ void texture_frame(uint64_t completed) {
         // tiled pattern over the Deku Tree's planks and Hyrule Field's path, with a 16 GB card's textures at the 6 GB budget
         // (issue 386). RX_VK_EVICT_NO_FLUSH=1: not written back, as before)
         static const bool no_flush = getenv("RX_VK_EVICT_NO_FLUSH") != nullptr;
+        // (HeyListen, RX_VK_PREFETCH_MS) nor one made ahead of its first draw in the last 1800 presents, while the textures are within
+        // 1/8 over their budget: it is unused because nothing has drawn it yet, and the draw it was made for comes with the next scene
+        // (Castle Town: evicted as unused, ~500 of those made ahead were made again at the gate's load). RX_VK_PREFETCH_KEEP=0: evicted as any
+        static const bool keep_prefetched = !getenv("RX_VK_PREFETCH_KEEP") || atoi(getenv("RX_VK_PREFETCH_KEEP")) != 0;
+        if (tex->prefetched) {
+            static int64_t st_pf_evict;
+            if (keep_prefetched && frame_no - last < 1800 && total_bytes <= budget + budget / 8) continue;
+            if (++st_pf_evict % 100 == 1) logf("vk: prefetch: textures made ahead evicted before their first draw: %lld", (long long)st_pf_evict);
+        }
         evict.push_back({tex, !no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted});
     }
     {   // (ported from Longshot 25ee6a83, #323) nor one whose storage another image was drawn into after its own last drawing

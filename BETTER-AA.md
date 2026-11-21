@@ -49,6 +49,16 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   the E-cores. i5-12600KF + RX 6800,
   1440p: Castle Town 59.7 -> 64.7 fps (1% low 36.8 -> 39.8), Kokiri 76.5 -> 78.8 fps (1% low 52.5 -> 58.8). Measured with the
   host's `HOS_PIN` (the same masks); `HOS_PCORE_GAME=0`: as before.
+- **Textures made ahead of their first draw** (`RX_VK_PREFETCH_MS`). The game makes its textures (`nvnTextureInitialize`) long
+  before it draws them: the neighbouring scenes are loaded ahead, and 1158 of 1200 ASTC textures were made 100+ frames before
+  their first draw. The renderer made each one at that draw, so a scene's first frames made 1000-1200 at once (~500 ASTC
+  transcodes), presents of 300-650 ms and the GPU's transcodes behind them holding the next frames' waits. Now the ASTC and BC
+  textures the game makes are made and uploaded 30 frames later (`RX_VK_PREFETCH_AGE`), up to 3 ms a present, and kept from
+  eviction until drawn (up to 1800 presents, while within 1/8 over the texture budget). Castle Town's gate to Hyrule Field, RX 6800,
+  4 + 4 runs: the time over 16.7 ms in the 4 s after the loading screen 1595 -> 1393 ms (frames over 50 ms 9.0 -> 6.3); walking
+  the town no slower (1% low 34.8 against 35.2-39.4). On by default where the driver allows the game over 11.5 GB of video
+  memory (the textures made ahead cost ~2 GB until drawn); `RX_VK_PREFETCH_MS=0`: off, `=<ms>`: on with that budget,
+  `RX_VK_PREFETCH_BC=0`: ASTC alone.
 - **The replay thread (`RX_VK_ASYNC=1`, opt-in) made usable** (after Longshot 82886e89). On the P-cores on Linux (the host's
   reserved core there is an E-core); the capture of what the game wrote up to its CPU signal is taken at the signal, on the
   game's thread; a present waits for that signal and is held while the presentation queue waits for it; a catch-up (a

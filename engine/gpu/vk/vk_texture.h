@@ -78,6 +78,7 @@ struct Texture {
     uint64_t written_back_hash = 0; // (its memory's hash after that write-back: still its own texels there, or the CPU's since)
     uint64_t verify_hash = 0;      // (RX_VK_VERIFY_DIM: its guest memory's hash when last uploaded)
     uint32_t checked_epoch = 0;
+    bool prefetched = false;  // (HeyListen, RX_VK_PREFETCH_MS: made ahead of its first draw, not drawn yet; vk_draw.cpp texture_prefetch)
     uint64_t upload_value = 0;   // (the submission its last upload was recorded in, and the parallel replay's segment
     uint64_t upload_seg = 0;     // that recorded it: one before it in the stream uploads it again)
     uint64_t dry_value = 0;      // (D4: the submission the parallel replay's dry pass last marked it written in)

@@ -2855,6 +2855,7 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     const bool known = texture_of((int)(handle & 0xFFFFF), &t, &v, &has_view);
     if (known) {
         tex = texture_get(&t, use == ViewUse::Sample || use == ViewUse::Storage);
+        if (tex) tex->prefetched = false;
         if (tex) view = texture_view(tex, &t, has_view ? &v : nullptr, want, use, &last_view_format, storage_as);
         if (tex) level = image_level(tex, has_view ? view_level(&v) : 0);
     }
@@ -2876,6 +2877,156 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     if (level_out) *level_out = level;
     return view;
 }
+
+}  // namespace
+// (HeyListen, RX_VK_PREFETCH_MS=<ms>) The textures the game makes (nvnTextureInitialize), made and uploaded before
+// a draw first samples them. The game makes them long before (1158 of 1200 ASTC textures 100+ frames before their first draw in
+// Castle Town: the neighbouring scenes are loaded ahead), and the renderer made them at that draw: a scene's first frames made
+// 600-1000 at once, 300-650 ms presents and the GPU's transcodes behind them holding the next frames' late fixes 170-400 ms (the
+// gate to the Market Entrance, RX 6800). Up to that many ms a present, at a recording's start. ASTC 2D, array and cube textures, as
+// the upload deferral: materials, never render targets. What the CPU writes into one after is taken as for any texture (its
+// pages' write generations); one the game finalized before its turn is left out
+namespace {
+std::mutex pf_mu;
+struct PfNew { nvn_tex t; uint64_t born; };
+std::vector<PfNew> pf_new;   // (pf_mu: made by the game since the replay thread last took them, and the frame it made each)
+std::unordered_map<uint64_t, uint64_t> pf_born;   // (pf_mu, RX_VK_PREFETCH_LOG: an ASTC texture's storage -> the frame the game made it)
+std::unordered_set<uint64_t> pf_gone;   // (pf_mu: the serials of noted textures the game finalized before their turn)
+size_t pf_waiting = 0;                  // (pf_mu: noted, not yet taken or made: pf_gone is kept only while some wait)
+}  // namespace
+
+double prefetch_ms() {
+    static std::atomic<int> state{0};   // (0 not known yet: no device; 1 decided)
+    static double ms = 0;
+    if (state.load(std::memory_order_acquire)) return ms;
+
+    // (textures made ahead of their first draw, up to this many ms a present: on by default with 3 ms on a card that allows the game
+    // over 11.5 GB of video memory, as what it made ahead stays until drawn (up to 1800 presents) and a smaller card's budget would
+    // push out what is drawn for it. RX_VK_PREFETCH_MS=0: off; =<ms>: on, that budget)
+    if (const char* e = getenv("RX_VK_PREFETCH_MS")) {
+        ms = std::max(0.0, atof(e));
+    } else {
+        uint64_t used = 0, allowed = 0;
+        if (!dev.device || !vram_usage(&used, &allowed)) return 0;
+        ms = allowed > (11ull << 30) + (512ull << 20) ? 3.0 : 0.0;
+    }
+    if (state.exchange(1) == 0)
+        logf("vk: textures made ahead of their first draw (RX_VK_PREFETCH_MS): %s", ms > 0 ? "on" : "off");
+    return ms;
+}
+bool texture_prefetch_on() {
+    return prefetch_ms() > 0;
+}
+void texture_prefetch_note(const nvn_tex* t) {
+    if (!texture_prefetch_on() || !t || !t->gpu) return;
+    // (and every block-compressed format, BC1-7 too: a scene's first frame made ~500 of those beside ~170 ASTC. Block-compressed
+    // formats are never drawn into; nor a texture flagged for the display, video, image stores, compression or sparse memory.
+    // RX_VK_PREFETCH_BC=0: ASTC alone)
+    static const bool bc_too = !getenv("RX_VK_PREFETCH_BC") || atoi(getenv("RX_VK_PREFETCH_BC")) != 0;
+    if (!vk_format(t->d.format).astc) {
+        int bw = 1, bh = 1;
+        if (!bc_too || nvn_block_size(t->d.format, &bw, &bh) <= 0 || bw < 4 || (t->d.flags & 0x6F)) return;
+    }
+    const int target = t->d.target;
+    if (target != NVN_TEXTURE_TARGET_2D && target != NVN_TEXTURE_TARGET_2D_ARRAY && target != NVN_TEXTURE_TARGET_CUBEMAP &&
+        target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)
+        return;
+    std::lock_guard lk(pf_mu);
+    if (pf_new.size() < (1u << 15)) pf_new.push_back({*t, texture_frame_no()}), pf_waiting++;
+    if (getenv("RX_VK_PREFETCH_LOG")) pf_born[t->gpu] = texture_frame_no();
+}
+void texture_prefetch_released(const nvn_tex* t) {
+    if (!texture_prefetch_on() || !t) return;
+    std::lock_guard lk(pf_mu);
+    if (pf_waiting) pf_gone.insert(t->serial);
+}
+/// (RX_VK_PREFETCH_LOG) an ASTC texture the renderer made: how many frames after the game made it (or not seen made); a draw's
+/// (not the prefetch's), per present when 20 or more
+thread_local bool pf_inside = false;
+void texture_prefetch_made(uint64_t gpu) {
+    static const bool log_on = getenv("RX_VK_PREFETCH_LOG") && atoi(getenv("RX_VK_PREFETCH_LOG")) != 0;
+    if (!log_on || pf_inside) return;
+    static uint64_t frame_at = ~0ull;
+    static int64_t b[6];   // (unseen, 0, 1-9, 10-29, 30-99, 100+)
+    std::lock_guard lk(pf_mu);
+    const uint64_t f = texture_frame_no();
+    if (f != frame_at) {
+        if (b[0] + b[1] + b[2] + b[3] + b[4] + b[5] >= 20)
+            logf("vk: prefetch: frame %llu: ASTC textures a draw made: never seen made %lld; made by the game that frame %lld, 1-9 frames "
+                 "before %lld, 10-29 %lld, 30-99 %lld, 100+ %lld", (unsigned long long)frame_at, (long long)b[0], (long long)b[1],
+                 (long long)b[2], (long long)b[3], (long long)b[4], (long long)b[5]);
+        frame_at = f;
+        for (auto& v : b) v = 0;
+    }
+    const auto it = pf_born.find(gpu);
+    if (it == pf_born.end()) b[0]++;
+    else {
+        const uint64_t d = f - it->second;
+        b[d == 0 ? 1 : d < 10 ? 2 : d < 30 ? 3 : d < 100 ? 4 : 5]++;
+    }
+}
+void texture_prefetch() {
+    if (!texture_prefetch_on()) return;
+    // (the budget is a present's, whatever its recordings: a loading screen's frame had dozens of them, and 6 ms each made
+    // 700-900 ms presents)
+    static const int64_t budget_ns = (int64_t)(prefetch_ms() * 1e6);
+    // (RX_VK_PREFETCH_AGE=<frames>, 30: made that many frames after the game made it, not at once: the storage may still be filling.
+    // The game made them 100+ frames before their first draw, 1158 of 1200 in Castle Town)
+    static const uint64_t age = getenv("RX_VK_PREFETCH_AGE") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_PREFETCH_AGE"))) : 30;
+    static const bool log_on = getenv("RX_VK_PREFETCH_LOG") && atoi(getenv("RX_VK_PREFETCH_LOG")) != 0;
+    static const bool look_only = log_on && atoi(getenv("RX_VK_PREFETCH_LOG")) == 2;   // (=2: the log alone, nothing made ahead)
+    static std::deque<PfNew> todo;   // (replay_mu: taken, not yet made; oldest first)
+    static uint64_t frame_at = ~0ull;
+    static int64_t frame_ns = 0;
+    static int64_t st_made, st_seen, st_ns, st_frames;
+    const auto steady_ns = [] { return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    const uint64_t frame = texture_frame_no();
+    {
+        std::lock_guard lk(pf_mu);
+        if (log_on && pf_new.size() >= 8)
+            logf("vk: prefetch: frame %llu: %zu textures made by the game, %zu waiting, %llu textures made so far",
+                 (unsigned long long)frame, pf_new.size(), todo.size(), (unsigned long long)texture_made());
+        todo.insert(todo.end(), pf_new.begin(), pf_new.end());
+        pf_new.clear();
+    }
+    if (frame != frame_at) frame_at = frame, frame_ns = 0, st_frames++;
+    if (todo.empty() || frame - todo.front().born < age || frame_ns >= budget_ns) return;
+    const int64_t t0 = steady_ns();
+    const bool defer = upload_defer_ok;
+    upload_defer_ok = false;
+    ParLock lk;
+    const uint64_t made0 = texture_made();
+    while (!todo.empty() && frame - todo.front().born >= age && frame_ns + (steady_ns() - t0) < budget_ns) {
+        bool gone;
+        {
+            std::lock_guard pl(pf_mu);
+            gone = pf_gone.erase(todo.front().t.serial) != 0;
+            if (pf_waiting) pf_waiting--;
+            if (!pf_waiting) pf_gone.clear();
+        }
+        if (!gone) {
+            st_seen++;
+            pf_inside = true;
+            const uint64_t m0 = texture_made();
+            Texture* tex = look_only ? nullptr : texture_get(&todo.front().t, true);
+            if (tex && texture_made() != m0) tex->prefetched = true;
+            pf_inside = false;
+        }
+        todo.pop_front();
+    }
+    upload_defer_ok = defer;
+    const int64_t dt = steady_ns() - t0;
+    frame_ns += dt;
+    st_made += (int64_t)(texture_made() - made0), st_ns += dt;
+    if (todo.empty() && st_seen >= 8) {
+        static int logged;
+        if (logged++ < 300)
+            logf("vk: prefetch: %lld textures looked at, %lld made, %.1f ms over %lld presents", (long long)st_seen, (long long)st_made,
+                 st_ns / 1e6, (long long)st_frames);
+        st_made = st_seen = st_ns = st_frames = 0;
+    }
+}
+namespace {
 
 /// A uniform buffer's descriptor range: the bank uploaded (driver banks, c1) or the user buffer in its pool
 struct BankCache {

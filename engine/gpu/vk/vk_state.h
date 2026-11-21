@@ -63,6 +63,15 @@ void register_sampler_copy(int id, const nvn_samp_par& p);
 const void* descriptor_ok(const void* p, size_t n);
 void texture_released(uint64_t serial);
 bool texture_of(int id, nvn_tex* t, nvn_view* v, bool* has_view);
+/// (HeyListen, RX_VK_PREFETCH_MS) a texture the game made (nvnTextureInitialize; any thread): an ASTC one is noted for texture_prefetch;
+/// and one it finalized (a noted one not made yet is left out)
+bool texture_prefetch_on();
+void texture_prefetch_note(const nvn_tex* t);
+void texture_prefetch_released(const nvn_tex* t);
+void texture_prefetch_made(uint64_t gpu);
+/// The textures the game made since, made and uploaded ahead of their first draw for up to RX_VK_PREFETCH_MS a present: the replay
+/// thread at a recording's start (replay_mu held, no segment recording)
+void texture_prefetch();
 void cs_slot_counts(const NvnState& s, uint32_t* tex, uint32_t* img);   // (hookshot) the compute program's slot counts
 /// (hookshot) set while a seed compute program is translated: its control section, which the c0 layout is read from in place of
 /// the bound program's (vk_bank.cpp)
