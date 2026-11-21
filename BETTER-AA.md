@@ -42,7 +42,15 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   cache (on cards with more than 9.5 GB) stored nothing in that case, so every return to an area transcoded them all again.
   The cache now stores every transcode (`RX_VK_BC_CACHE_LAZY=1` is upstream's): walking Castle Town's gate <-> market at
   1440p on an RX 6800, the 1% low went 24.4 -> 31.2 fps and frames over 33 ms 35 -> 6.5 a minute. Up to 1 GB of system RAM
-  (`RX_VK_BC_CACHE_MB`).
+  (`RX_VK_BC_CACHE_MB`); where the driver allows the game over 11.5 GB of video memory, up to 2 GB of video memory instead
+  (`RX_VK_BC_CACHE_VRAM`): the 1 GB was full in Castle Town, and its gate's load transcoded again ~1500 textures it had transcoded
+  before (the 1365 x 1365 x 90 terrain arrays among them, 44-99 ms each) against ~500 served; in video memory 55-85 against
+  650-1150, and the system RAM it took is free.
+- **No read of a depth render target the GPU has not drawn yet.** A depth or stencil target sampled before it is drawn, over
+  storage no render target took (last frame's shadow map at a new address), was read from guest memory: Castle Town's
+  12288 x 12288 shadow atlas, 288 MB unswizzled on the CPU in 44-49 ms, at each scene change. It is left as made (cleared);
+  `RX_VK_DEPTH_RT_READ=1` reads it as before. With the BC cache above, RX 6800, the gate to Hyrule Field, 4 + 4 runs: time over
+  16.7 ms in the 4 s after the loading screen 1165 -> 992 ms.
 - **The game's frame threads on the P-cores of a Linux hybrid CPU** (host `hos_thread.c`). sead's main thread, the BaseProc
   executors, the ModuleSystem workers and the Presentation Thread are kept to the cores `/sys/devices/cpu_core/cpus` lists when
   the kernel also lists E-cores (the threads they start inherit it); left to the scheduler a fifth of the game's work ran on

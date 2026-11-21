@@ -1335,8 +1335,22 @@ std::unordered_map<uint64_t, BcCacheEntry> bcc;   // (bcc_mu)
 std::vector<BcCacheEntry> bcc_dead;               // (bcc_mu; freed once the GPU is done with them)
 uint64_t bcc_bytes = 0, bcc_tick = 0;
 std::atomic<int64_t> st_bcc_hits{0}, st_bcc_stores{0}, st_bcc_hit_bytes{0};
+// (HeyListen) RX_VK_BC_CACHE_VRAM=1 (the default where the driver allows the game over 11.5 GB of video memory; 0: system memory, as
+// before): the cache's blocks in video memory, 2048 MB of them by default. The system memory's 1024 MB were full in Castle Town and
+// the gate's loads transcoded 1400-1500 textures of bytes transcoded before against 500 served (the 1365 x 1365 x 90 terrain arrays
+// among them, 44-99 ms each); a 16 GB card had 4-6 GB of its video memory free there, and the machine's 15 GB of RAM 1.7 GB.
+// A hit is then a copy within video memory
+bool bcc_vram() {
+    static const bool v = [] {
+        if (const char* e = getenv("RX_VK_BC_CACHE_VRAM")) return atoi(e) != 0;
+        uint64_t used = 0, allowed = 0;
+        return vram_usage(&used, &allowed) && allowed > (11ull << 30) + (512ull << 20);
+    }();
+    return v;
+}
 uint64_t bcc_cap() {
-    static const uint64_t v = (uint64_t)(getenv("RX_VK_BC_CACHE_MB") ? std::max(0, atoi(getenv("RX_VK_BC_CACHE_MB"))) : 1024) << 20;
+    static const uint64_t v =
+        (uint64_t)(getenv("RX_VK_BC_CACHE_MB") ? std::max(0, atoi(getenv("RX_VK_BC_CACHE_MB"))) : bcc_vram() ? 2048 : 1024) << 20;
     return v;
 }
 // (HeyListen, 2026-11-14) RX_VK_BC_CACHE_LAZY=1 (the default on cards the driver allows more than 9.5 GB of; 0: every
@@ -1518,8 +1532,9 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             if (cache_key && !alpha) {
                 entry.bytes = bcc_size(tex, pieces);
                 MemKindScope mem_kind_(MemKind::BcCache);
-                if (!create_buffer_cached(entry.bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, entry.buf,
-                                          entry.alloc, nullptr))
+                const VkBufferUsageFlags u = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                if (!(bcc_vram() ? create_buffer(entry.bytes, u, false, entry.buf, entry.alloc, nullptr)
+                                 : create_buffer_cached(entry.bytes, u, entry.buf, entry.alloc, nullptr)))
                     entry = BcCacheEntry{};
             }
             astc_bc_batched(cmd, tex, pieces, staged, s, entry.buf ? &entry : nullptr);
@@ -3553,6 +3568,8 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     // (hookshot, issue 10) only for a format the GPU can draw into (drawable_format above); RX_VK_RT_SKIP_ANY_FORMAT=1: any, as before
     static const bool any_format = getenv("RX_VK_RT_SKIP_ANY_FORMAT") && atoi(getenv("RX_VK_RT_SKIP_ANY_FORMAT")) != 0;
     uint32_t owned = !tex->uploaded && !upload_all ? gpu_owned_since(tex->gpu, tex->guest_size) : 0;
+    const bool never_drawn_over = !tex->uploaded && !owned;   // (no render target took its storage: RX_VK_DEPTH_RT_READ below)
+    bool from_eviction = false;
     if (owned && !any_format && !drawable_format(*tex)) {
         static std::atomic<int> logged{0};
         if (logged.fetch_add(1, std::memory_order_relaxed) < 30)
@@ -3566,6 +3583,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         if (e != evicted_from_memory.end() && e->second == tex->guest_size) {
             evicted_from_memory.erase(e);
             owned = 0;
+            from_eviction = true;
             const uint64_t n = ++st_remade_uploaded;
             if (n <= 20 || n % 100 == 0)
                 logf("vk: texture #%u %#llx %ux%u NVN %#x evicted, made again over storage render targets took: uploaded from "
@@ -3592,6 +3610,29 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
             }
         }
         return tex;
+    }
+    // (HeyListen, RX_VK_DEPTH_RT_READ=0 by default) a depth or stencil render target (NVN's compressible, adaptive zcull, fast clear or
+    // zcull stencil flags) sampled before the GPU wrote it, over storage no render target took and not made again after an eviction
+    // (whose write-back is in the memory): not read from memory, left as made (cleared to 0). Only the GPU writes such storage;
+    // sampled first, it is last frame's shadow map at a new address, read before this frame draws it. Castle Town's
+    // 12288 x 12288 DEPTH16 shadow atlas came in so at each scene change: 288 MB unswizzled on the CPU in 44-49 ms in the load's
+    // frame, and copied up. RX_VK_DEPTH_RT_READ=1: read, as before
+    if (!tex->uploaded && !tex->gpu_written && (tex->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+        static const bool read = getenv("RX_VK_DEPTH_RT_READ") && atoi(getenv("RX_VK_DEPTH_RT_READ")) != 0;
+        static std::atomic<int64_t> skipped{0}, skipped_mb{0}, read_n{0};
+        if (!read && (tex->d.flags & 0x588) && never_drawn_over && !from_eviction) {
+            tex->uploaded = true;
+            tex->upload_gen = gen;
+            const int64_t k = ++skipped, mb = skipped_mb += (int64_t)(tex->guest_size >> 20);
+            if (k <= 4 || k % 100 == 0)
+                logf("vk: depth render target #%u %#llx %ux%u NVN %#x flags %#x sampled before drawn: left cleared, not read (%lld so, %lld MB)",
+                     tex->id, (unsigned long long)tex->gpu, tex->width, tex->height, tex->nvn_format, tex->d.flags, (long long)k,
+                     (long long)mb);
+            return tex;
+        }
+        if (++read_n <= 8)
+            logf("vk: depth texture #%u %#llx %ux%u NVN %#x flags %#x sampled before drawn: read from memory", tex->id,
+                 (unsigned long long)tex->gpu, tex->width, tex->height, tex->nvn_format, tex->d.flags);
     }
     // (HeyListen, HOS_NOACCESS_RAM: a first upload of storage in a pool the game made without CPU access, none of whose pages was
     // ever committed: nobody wrote it, it reads as zeros, and the image was made cleared to zero (non-block-compressed formats
