@@ -1400,11 +1400,25 @@ uint64_t bcc_size(const Texture& tex, const std::vector<AstcPiece>& pieces) {
     return n;
 }
 /// Entries past the cap go, least recently used first (bcc_mu held)
+// (HeyListen, RX_VK_BC_CACHE_BIG_MB=<MB>, 32; 0: off) entries of that size or more go after all the smaller ones, as long as they hold
+// at most half the cap: one costs a frame on its own to transcode again. Least recently used alone, Hyrule Field's four
+// 1365 x 1365 x 90 terrain arrays (4 x 56 MB of ASTC, transcoded at boot) were pushed out by thousands of small textures by the
+// time Castle Town's gate led there: the runs that transcoded them again had 1300-1560 ms over 16.7 ms after its loading screen,
+// those that took them from the cache 770-950
 void bcc_trim_locked() {
+    static const uint64_t big = (uint64_t)(getenv("RX_VK_BC_CACHE_BIG_MB") ? std::max(0, atoi(getenv("RX_VK_BC_CACHE_BIG_MB"))) : 32) << 20;
     while (bcc_bytes > bcc_cap() && !bcc.empty()) {
-        auto old = bcc.begin();
-        for (auto it = bcc.begin(); it != bcc.end(); ++it)
-            if (it->second.tick < old->second.tick) old = it;
+        uint64_t big_bytes = 0;
+        if (big)
+            for (const auto& kv : bcc)
+                if (kv.second.bytes >= big) big_bytes += kv.second.bytes;
+        const bool keep_big = big && big_bytes <= bcc_cap() / 2 && big_bytes < bcc_bytes;
+        auto old = bcc.end();
+        for (auto it = bcc.begin(); it != bcc.end(); ++it) {
+            if (keep_big && it->second.bytes >= big) continue;
+            if (old == bcc.end() || it->second.tick < old->second.tick) old = it;
+        }
+        if (old == bcc.end()) old = bcc.begin();
         bcc_bytes -= old->second.bytes;
         bcc_dead.push_back(old->second);
         bcc.erase(old);
@@ -1488,6 +1502,11 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             full_barrier(cmd);
             st_bcc_hits.fetch_add(1, std::memory_order_relaxed);
             st_bcc_hit_bytes.fetch_add((int64_t)hit.bytes, std::memory_order_relaxed);
+            if (hit.bytes >= (32ull << 20)) {
+                static int logged;
+                if (logged++ < 40)
+                    logf("vk: BC cache: %ux%u x%u (%llu MB of blocks) served", tex.width, tex.height, tex.layers, (unsigned long long)(hit.bytes >> 20));
+            }
             return true;
         }
     }

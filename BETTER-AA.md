@@ -45,7 +45,10 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   (`RX_VK_BC_CACHE_MB`); where the driver allows the game over 11.5 GB of video memory, up to 2 GB of video memory instead
   (`RX_VK_BC_CACHE_VRAM`): the 1 GB was full in Castle Town, and its gate's load transcoded again ~1500 textures it had transcoded
   before (the 1365 x 1365 x 90 terrain arrays among them, 44-99 ms each) against ~500 served; in video memory 55-85 against
-  650-1150, and the system RAM it took is free.
+  650-1150, and the system RAM it took is free. Entries of 32 MB or more go after all the smaller ones while they hold at most
+  half of it (`RX_VK_BC_CACHE_BIG_MB`): Hyrule Field's four 1365 x 1365 x 90 terrain arrays, transcoded at boot and evicted as
+  textures by the time the gate leads there, were transcoded again (4 x 56 MB of ASTC, a 383 ms frame, 1410 ms over 16.7 ms after
+  the loading screen); now served from the cache (945-991 ms). 4 + 4 runs: 1043 -> 954 ms.
 - **No read of a depth render target the GPU has not drawn yet.** A depth or stencil target sampled before it is drawn, over
   storage no render target took (last frame's shadow map at a new address), was read from guest memory: Castle Town's
   12288 x 12288 shadow atlas, 288 MB unswizzled on the CPU in 44-49 ms, at each scene change. It is left as made (cleared);
