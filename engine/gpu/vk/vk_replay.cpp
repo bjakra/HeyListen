@@ -714,8 +714,12 @@ uint64_t ts_sig[kRecordings];   // (the value each slot's submission signals)
 std::deque<uint64_t> late_values;
 int64_t st_tail_ns, st_tail_n, st_tail_recs;
 void gpu_tail_compute(uint64_t v, double period) {   // (ts_mu held)
-    std::vector<TsRec> s(ts_recs.begin(), ts_recs.end());
-    std::sort(s.begin(), s.end(), [](const TsRec& a, const TsRec& b) { return a.start < b.start; });
+    // (better-aa: kept between calls, and sorted only when out of order: the recordings are collected in their order on the one
+    // queue, so they nearly always are. A copy and a sort of 256 at every late value were ~2% of the Presentation Thread in town)
+    static thread_local std::vector<TsRec> s;
+    s.assign(ts_recs.begin(), ts_recs.end());
+    const auto by_start = [](const TsRec& a, const TsRec& b) { return a.start < b.start; };
+    if (!std::is_sorted(s.begin(), s.end(), by_start)) std::sort(s.begin(), s.end(), by_start);
     int at = -1;
     uint64_t end = 0;
     for (int i = 0; i < (int)s.size(); i++)
