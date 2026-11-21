@@ -96,8 +96,8 @@ def wiring():
         need('env_on("RX_VK_NO_EVICT")' in body and "dead_targets_on()" in body, "the sweep is off with RX_VK_NO_EVICT or RX_VK_DEAD_TARGETS=0")
         need(frame.index("pool_trim();") < gate, "the pool is trimmed before the gate, every present")
     sweep = block(tex, "void dead_targets_sweep(uint64_t completed)")
-    for part in ("dead_min_unused_presents()", "dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,",
-                 "tex->levels == 1 && tex->layers == 1 && tex->depth <= 1", "target_overlap::shifted_over(lo, hi, tex->last_frame,",
+    for part in ("dead_min_unused_presents()", "dead_targets::candidate(frame_no, t->last_frame, need, t->last_value, completed,",
+                 "t->levels == 1 && t->layers == 1 && t->depth <= 1", "target_overlap::shifted_over(lo, hi, tex->last_frame,",
                  "(*it)->last_written", "destroy_later(*tex);", "forget_gpu(tex);", "remade.erase(tex);", "textures.erase(it)"):
         need(part in sweep, "the sweep: " + part)
     for part in ("flush_textures", "flush_texture(", "readback"):

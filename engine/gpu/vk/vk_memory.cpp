@@ -154,11 +154,16 @@ int64_t st_pm_made = 0, st_pm_fills = 0, st_pm_fill_bytes = 0, st_pm_live_bytes 
 int64_t st_pm_held = 0, st_pm_held_bytes = 0;   // (B4: pools the drop was told about)
 int64_t st_pm_why[6] = {};   // (a binding imported: no recording, refused, parallel segment, deferred, written here, the mirror not made)
 bool staging_into_mirror(Pool& p, std::vector<VkBufferCopy>& runs, VkCommandBuffer cmd = VK_NULL_HANDLE);
+#ifdef _WIN32
 struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken for every buffer a draw binds)
     SRWLOCK l = SRWLOCK_INIT;
     void lock() { AcquireSRWLockExclusive(&l); }
     void unlock() { ReleaseSRWLockExclusive(&l); }
 };
+#else
+// (better-aa, from Longshot 6112edb6: on Linux SRWLOCK is a pthread rwlock, and pools_mu is only ever taken exclusive: a plain mutex)
+using SrwMutex = std::mutex;
+#endif
 SrwMutex pools_mu;
 uint32_t generation = ~0u;
 uint64_t align = 4096;
@@ -4719,6 +4724,7 @@ std::mutex cpu_words_mu;
 // once when it filled, ~4% of the replay thread in a Kokiri profile; one sorted vector with every write-back's new words
 // merged in moved the whole of it each time, ~2.4% on a 3900X there (11-08): report words come at new addresses all the time)
 std::vector<uint64_t> cpu_words, cpu_words_recent, cpu_words_new;
+uint64_t cpu_words_seen[4096];   // (better-aa: the words pushed since the sets were last forgotten, memory_cpu_owned; cpu_words_mu)
 void sorted_merge(std::vector<uint64_t>& into, const uint64_t* b, const uint64_t* e) {
     const size_t mid = into.size();
     into.insert(into.end(), b, e);
@@ -4811,9 +4817,20 @@ void memory_cpu_owned(uint64_t guest, uint64_t size) {
     std::lock_guard lk(cpu_words_mu);
     if (cpu_words.size() + cpu_words_recent.size() + cpu_words_new.size() > 65536) {   // (as before: forgotten when it gets this big)
         cpu_words_merge();   // (which leaves cpu_words_new empty)
-        if (cpu_words.size() + cpu_words_recent.size() > 65536) cpu_words.clear(), cpu_words_recent.clear();
+        if (cpu_words.size() + cpu_words_recent.size() > 65536) {
+            cpu_words.clear(), cpu_words_recent.clear();
+            std::memset(cpu_words_seen, 0, sizeof cpu_words_seen);   // (the sets forgotten: the filter with them)
+        }
     }
-    for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) cpu_words_new.push_back(a);
+    // (better-aa) a word pushed before is in one of the three sets (words leave them only at the clear above), so it is not
+    // pushed again: the same report words came every frame, and each merge sorted and searched all of them again (~3.7% of the
+    // replay thread in a Kokiri profile, the sort and the merge). A slot holds one word: another word in it only costs a push
+    for (uint64_t a = guest & ~7ull; a < guest + size; a += 8) {
+        uint64_t& seen = cpu_words_seen[(a >> 3) * 0x9E3779B97F4A7C15ull >> 52];
+        if (seen == a) continue;
+        seen = a;
+        cpu_words_new.push_back(a);
+    }
     // (written on the CPU: their pages unknown to the write-back diff's shadows)
     for (uint64_t pg = guest >> kPageShift; pg <= (guest + std::max<uint64_t>(size, 1) - 1) >> kPageShift; pg++) {
         const uint32_t page = (uint32_t)pg;

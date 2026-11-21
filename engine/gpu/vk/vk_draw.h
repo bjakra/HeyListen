@@ -94,7 +94,8 @@ void pipeline_cache_between_builds();
 /// The stream's uniform updates (UPDATE_UB, vk_replay.cpp) that overlap [addr, addr + n) and may not be in guest
 /// memory yet when the GPU reads it: a copy of the range with them applied, at the offset alloc returns in the
 /// recording's stream (mapped at base), or UINT64_MAX when none overlaps
-uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc);
+// (better-aa, from Longshot 6112edb6: a plain function and its alignment, not a std::function built at each draw)
+uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, uint64_t (*alloc)(uint64_t n, uint64_t align), uint64_t align);
 /// (HL_UBO_INLINE) those updates copied onto p, the bytes an inline bind carried for [addr, addr + n)
 void ub_overlay_onto(uint64_t addr, uint64_t n, uint8_t* p);
 /// Guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
