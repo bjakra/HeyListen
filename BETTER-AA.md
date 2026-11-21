@@ -43,6 +43,10 @@ calls (`HOST_EXPORTS`), so a v0.4.2 game does not load it.
   The cache now stores every transcode (`RX_VK_BC_CACHE_LAZY=1` is upstream's): walking Castle Town's gate <-> market at
   1440p on an RX 6800, the 1% low went 24.4 -> 31.2 fps and frames over 33 ms 35 -> 6.5 a minute. Up to 1 GB of system RAM
   (`RX_VK_BC_CACHE_MB`).
+- **The compute mesh fallback's records line after line** (Longshot 55e8fbd5, ported). On Linux RDNA 2 the vegetation's task and
+  mesh programs run as compute (native mesh shaders hang the GPU there, issue 51); their records were written record by
+  record, so neighbouring threads wrote words a record apart. `RX_VK_MESH_FB_LAYOUT` (soa by default; aos: as before).
+  RX 6800, Kokiri standing, three alternated pairs: GPU 11.19 -> 10.51 ms a frame, 73.1 -> 76.8 fps, 1% low 50.9 -> 54.8.
 - **The game's texture heap compacted once a second** (Longshot 7b229f66, ported). The game asks for a compaction round of its
   texture heap at every frame none runs, and every texture a round moves reaches the renderer as a new one: batches of
   new textures every few frames in busy places. `HOS_TEX_COMPACT_MS` (1000 by default; 0: the game's own). Castle Town on an
@@ -197,5 +201,6 @@ AMD FSR 4 on Linux needs a Vulkan FSR 4 library beside the game, e.g. one built 
 HeyListen is GPL-3.0-or-later. `vk_antilag.*`, `vk_fsr3fi.*`, `vk_builtin_spv.*`, `shaders/fg_hud.comp`,
 `scripts/fsr3_shaders.py` and the frame generation changes in `vk_framegen.cpp`, `vk_draw.cpp` and `vk_fsr3_inputs.cpp`
 are ported from [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot) (commit 868f6be871, GPL-3.0), as are
-`host/oot_tex_compact.*` and `nx2/oot_patches.py`'s texture compaction patch (7b229f66), so this fork
+`host/oot_tex_compact.*` and `nx2/oot_patches.py`'s texture compaction patch (7b229f66), the mesh fallback's line layout
+(55e8fbd5) and six replay-thread costs (6112edb6), so this fork
 as a whole is distributed under GPL-3.0. AMD's FidelityFX SDK sources are MIT (`engine/third_party/fidelityfx-sdk`).

@@ -100,6 +100,7 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
+#include "mesh_mode.h"   // (better-aa: RX_VK_MESH_FB_LAYOUT, mesh_rule::fb_layout)
 
 namespace mkwvk {
 namespace {
@@ -2294,6 +2295,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         mrt.mesh_fallback_capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
         mrt.mesh_fallback_task = task_t != nullptr;
         mrt.mesh_fallback_task_threads = task_t ? task_t->program.workgroup_size[0] : 0;
+        mrt.mesh_fallback_layout = fallback ? mesh_fallback_layout() : 0;
         const std::vector<uint32_t> mspirv = Shader::Backend::SPIRV::EmitSPIRV(profile(fallback ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_MESH_BIT_EXT), mrt, mesh_t->program, bindings);
         if (getenv("RX_VK_MESH_NOINLINE_ABOVE")) {   // (stream P5: the IR size the threshold is read against, with the SPIR-V's)
             size_t ir_n = 0;
@@ -2314,6 +2316,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             vrt.mesh_fallback = true;
             vrt.mesh_fallback_vertex = true;
             vrt.mesh_fallback_capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
+            vrt.mesh_fallback_layout = mrt.mesh_fallback_layout;
             vrt.convert_depth_mode = host->depth_minus_w() != 0;
             const Shader::Stage saved_stage{mesh_t->program.stage};
             // (the generated vertex stage has no descriptors of its own: its inputs are the records. Only the stores
@@ -2841,6 +2844,15 @@ bool shader_key_on() {
     return on;
 }
 uint64_t program_cache_stamp() { return disk_stamp(); }
+uint32_t mesh_fallback_layout() {
+    static const uint32_t layout = [] {
+        const mesh_rule::Choice c = mesh_rule::fb_layout(getenv("RX_VK_MESH_FB_LAYOUT"));
+        // (once, on a GPU that translates a fallback program: which layout its records take, set or not)
+        logf("vk: mesh fallback records: %s (%s)", c.mode == 1 ? "line after line (soa)" : "record after record (aos)", c.why);
+        return (uint32_t)c.mode;
+    }();
+    return layout;
+}
 /// (hookshot) How many program keys the program cache holds now (SIZE_MAX: it is off). vk_draw.cpp's prepare check compares it with
 /// what the last prepare left there: a cache cut short or made again under another stamp (a start with other shader settings,
 /// stopped before it prepared) has lost what the record says was prepared

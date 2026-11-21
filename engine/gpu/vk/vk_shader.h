@@ -108,6 +108,8 @@ std::string program_code_keys(const NvnState& s);   // (hookshot) " stage:key" f
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);   // (program_for without its cache)
 void program_wait(const Program* p);
 uint64_t program_cache_stamp();   // (what the kept programs and pipelines are good for)
+/// (better-aa, from Longshot 55e8fbd5) RX_VK_MESH_FB_LAYOUT, read once (mesh_mode.h mesh_rule::fb_layout): the compute fallback's record layout
+uint32_t mesh_fallback_layout();
 size_t program_cache_kept();   // (hookshot) program keys in the cache now, SIZE_MAX: no cache
 /// (hookshot) RX_VK_SHADER_KEY (default on, 0: off): programs get a fingerprint of what the driver compiles, and a start after a translator
 /// change builds again only what the fingerprints say the driver has not seen (vk_draw.cpp, the compiled ledger)

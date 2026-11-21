@@ -133,4 +133,16 @@ inline bool task_mesh_fallback_wanted(bool windows, uint32_t vendor, uint32_t de
     return on;
 }
 
+/// (better-aa, from Longshot 55e8fbd5) RX_VK_MESH_FB_LAYOUT: how the compute fallback's mesh stage lays out its records
+/// (Shader::Backend::SPIRV::MeshFallbackLayout): aos 0, record after record (as before); unset, empty or soa 1, line after line:
+/// the default, faster on every GPU Longshot measured that takes the fallback (a Steam Deck, an RX 580). Anything else: the
+/// default, and why says so. It changes the translation: a name under RX_VK_MESH, so the program cache's stamp takes the switch's
+/// text (vk_shader.cpp disk_stamp); RX_VK_PROGRAM_CACHE_TAG keeps an A/B's caches apart
+inline Choice fb_layout(const char* env) {
+    if (!env || !*env) return {1, "the default"};
+    if (same_word(env, "aos")) return {0, "RX_VK_MESH_FB_LAYOUT"};
+    if (same_word(env, "soa")) return {1, "RX_VK_MESH_FB_LAYOUT"};
+    return {1, "the default (RX_VK_MESH_FB_LAYOUT is none of aos and soa)"};
+}
+
 }  // namespace mesh_rule
